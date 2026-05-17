@@ -1,0 +1,57 @@
+name: Build Windows EXE
+
+# 언제 실행되는지: main 브랜치에 push 하거나, 수동으로 Run workflow 누를 때
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:        # Actions 탭에서 수동 실행 버튼 활성화
+  release:
+    types: [created]        # GitHub Release 만들 때도 자동 빌드
+
+jobs:
+  build:
+    name: Build .exe on Windows
+    runs-on: windows-latest   # ★ Windows 가상머신에서 실행 (무료 제공)
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: PyInstaller로 .exe 빌드
+        run: |
+          pyinstaller --noconfirm --onefile --windowed `
+            --name "MyAssetManager" `
+            --hidden-import="yfinance" `
+            --collect-data="yfinance" `
+            app.py
+
+      - name: 빌드 결과 확인
+        run: |
+          dir dist
+          Get-Item dist/MyAssetManager.exe | Format-List Name, Length, LastWriteTime
+
+      # 1) Actions 페이지에서 누구나 다운로드할 수 있는 아티팩트로 업로드
+      - name: 아티팩트 업로드 (Actions에서 다운로드)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyAssetManager-Windows
+          path: dist/MyAssetManager.exe
+          retention-days: 30
+
+      # 2) Release를 만들었다면, 그 Release에 .exe를 자동 첨부
+      - name: 릴리스에 .exe 첨부
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/MyAssetManager.exe

@@ -1,0 +1,47 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    name: Build .exe on Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: PyInstaller로 .exe 빌드
+        run: |
+          pyinstaller --noconfirm --onefile --windowed `
+            --name "MyAssetManager" `
+            --hidden-import="yfinance" `
+            --collect-data="yfinance" `
+            app.py
+
+      - name: 빌드 결과 확인
+        run: |
+          dir dist
+
+      - name: 아티팩트 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyAssetManager-Windows
+          path: dist/MyAssetManager.exe
+          retention-days: 30

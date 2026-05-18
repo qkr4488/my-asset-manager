@@ -1,31 +1,67 @@
 """
-app.py - 내 자산 관리자 (가계부 + 적금/예금 + 주식 + 일정)
-실행: python app.py
+app.py - 내 자산 관리자 v2
+- 가계부, 적금/예금 복리, 주식, 주식 매매손익, 기타 자산, 갓생살기(습관+목표+To-Do), 뉴스
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime, date, timedelta
 import threading
+import webbrowser
+import random
 
 from database import Database
 from finance import (
     compound_deposit, compound_savings, calculate_deposit,
-    maturity_date, fetch_stock_price,
+    maturity_date, fetch_stock_quote, fetch_stock_news,
 )
 
-# ====== 색상 테마 ======
+# ==================== 색상/테마 ====================
 BG = "#f4f6fb"
+CARD_BG = "#ffffff"
 PRIMARY = "#2c5fb3"
 ACCENT = "#5cb85c"
 DANGER = "#d9534f"
+WARN = "#f0ad4e"
 FG = "#1a2540"
 MUTED = "#7a8aa3"
+SOFT = "#eef2f9"
+
+CATEGORY_COLORS = {
+    "건강": "#5cb85c", "재정": "#f0ad4e", "학습": "#4a90e2",
+    "커리어": "#9b59b6", "관계": "#e67e22", "취미": "#1abc9c",
+    "기타": "#7a8aa3",
+}
+
+QUOTES = [
+    "작은 진전도 진전이다. 매일 한 걸음씩.",
+    "어제의 나보다 오늘 더 나은 내가 되자.",
+    "운이 좋아지는 가장 확실한 방법은, 매일 같은 자리에 있는 것.",
+    "성공은 일상의 작은 노력이 쌓인 결과다.",
+    "할 일을 미루면 미래의 내가 갚는다.",
+    "동기는 잠시지만, 습관은 영원하다.",
+    "1%씩 매일 좋아진다면, 1년 후 37배 성장한다.",
+    "지금 시작하기에 가장 좋은 시간은 오늘이다.",
+    "완벽보다 꾸준함이 이긴다.",
+    "오늘 흘린 땀은 내일의 자유다.",
+]
 
 
 def won(n):
-    """숫자를 한국 원화 형식 문자열로 변환"""
     try:
         return f"{n:,.0f}원"
+    except Exception:
+        return str(n)
+
+
+def money(n, currency="KRW"):
+    try:
+        if currency == "KRW":
+            return f"{n:,.0f}원"
+        if currency == "USD":
+            return f"${n:,.2f}"
+        if currency == "JPY":
+            return f"¥{n:,.0f}"
+        return f"{n:,.2f} {currency}"
     except Exception:
         return str(n)
 
@@ -33,18 +69,19 @@ def won(n):
 class AssetManagerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("내 자산 관리자 - My Asset Manager")
-        self.geometry("1100x720")
+        self.title("내 자산 관리자 v2")
+        self.geometry("1200x780")
         self.configure(bg=BG)
-        self.minsize(950, 640)
+        self.minsize(1000, 680)
 
         self.db = Database()
+        self.today_quote = random.choice(QUOTES)
 
         self._setup_style()
         self._build_ui()
         self.refresh_all()
 
-    # ---------- 스타일 ----------
+    # ============ 스타일 ============
     def _setup_style(self):
         style = ttk.Style(self)
         try:
@@ -52,164 +89,199 @@ class AssetManagerApp(tk.Tk):
         except Exception:
             pass
         style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab", padding=(18, 10),
+        style.configure("TNotebook.Tab", padding=(16, 9),
                         font=("Malgun Gothic", 10, "bold"))
         style.map("TNotebook.Tab",
                   background=[("selected", PRIMARY)],
                   foreground=[("selected", "white")])
         style.configure("TFrame", background=BG)
+        style.configure("Card.TFrame", background=CARD_BG)
         style.configure("TLabel", background=BG, foreground=FG,
                         font=("Malgun Gothic", 10))
         style.configure("Header.TLabel", font=("Malgun Gothic", 16, "bold"),
                         foreground=PRIMARY, background=BG)
         style.configure("Sub.TLabel", font=("Malgun Gothic", 11, "bold"),
                         foreground=FG, background=BG)
-        style.configure("Card.TFrame", background="white", relief="flat")
         style.configure("TButton", font=("Malgun Gothic", 10), padding=6)
-        style.configure("Primary.TButton", foreground="white",
-                        background=PRIMARY, padding=8)
+        style.configure("Primary.TButton", padding=8)
         style.map("Primary.TButton",
                   background=[("active", "#214f96")])
         style.configure("Treeview", font=("Malgun Gothic", 10), rowheight=26)
         style.configure("Treeview.Heading", font=("Malgun Gothic", 10, "bold"))
+        style.configure("Habit.Horizontal.TProgressbar",
+                        troughcolor=SOFT, background=ACCENT)
+        style.configure("Goal.Horizontal.TProgressbar",
+                        troughcolor=SOFT, background=PRIMARY)
 
-    # ---------- UI ----------
+    # ============ UI ============
     def _build_ui(self):
-        # 상단 타이틀
         top = tk.Frame(self, bg=BG)
-        top.pack(fill="x", padx=20, pady=(16, 6))
+        top.pack(fill="x", padx=20, pady=(14, 4))
         tk.Label(top, text="💰 내 자산 관리자", bg=BG, fg=PRIMARY,
                  font=("Malgun Gothic", 18, "bold")).pack(side="left")
         self.summary_label = tk.Label(top, text="", bg=BG, fg=MUTED,
                                       font=("Malgun Gothic", 11))
         self.summary_label.pack(side="right")
 
-        # 탭
         self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True, padx=20, pady=10)
+        self.nb.pack(fill="both", expand=True, padx=20, pady=8)
 
         self.tab_dashboard = ttk.Frame(self.nb)
         self.tab_ledger = ttk.Frame(self.nb)
         self.tab_deposit = ttk.Frame(self.nb)
         self.tab_stock = ttk.Frame(self.nb)
+        self.tab_trade = ttk.Frame(self.nb)
         self.tab_asset = ttk.Frame(self.nb)
-        self.tab_schedule = ttk.Frame(self.nb)
+        self.tab_godlife = ttk.Frame(self.nb)
+        self.tab_news = ttk.Frame(self.nb)
 
         self.nb.add(self.tab_dashboard, text="📊 대시보드")
         self.nb.add(self.tab_ledger, text="💳 가계부")
         self.nb.add(self.tab_deposit, text="🏦 적금/예금")
         self.nb.add(self.tab_stock, text="📈 주식")
+        self.nb.add(self.tab_trade, text="💱 매매손익")
         self.nb.add(self.tab_asset, text="🏠 기타 자산")
-        self.nb.add(self.tab_schedule, text="📅 일정/목표")
+        self.nb.add(self.tab_godlife, text="✨ 갓생살기")
+        self.nb.add(self.tab_news, text="📰 뉴스")
 
         self._build_dashboard()
         self._build_ledger()
         self._build_deposit()
         self._build_stock()
+        self._build_trade()
         self._build_asset()
-        self._build_schedule()
+        self._build_godlife()
+        self._build_news()
 
-    # ========== 대시보드 ==========
+    # ==================== 대시보드 ====================
     def _build_dashboard(self):
         frame = self.tab_dashboard
-        ttk.Label(frame, text="자산 현황 요약", style="Header.TLabel").pack(
-            anchor="w", padx=20, pady=(20, 10))
+        ttk.Label(frame, text="자산 현황 요약",
+                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(20, 6))
 
-        # 카드 영역
+        # 명언
+        quote = tk.Label(frame, text=f"💬  {self.today_quote}",
+                         bg=BG, fg=MUTED, font=("Malgun Gothic", 11, "italic"))
+        quote.pack(anchor="w", padx=20, pady=(0, 10))
+
         cards = tk.Frame(frame, bg=BG)
-        cards.pack(fill="x", padx=20, pady=10)
-
+        cards.pack(fill="x", padx=20, pady=4)
         self.card_total = self._make_card(cards, "총 자산", "0원", PRIMARY)
-        self.card_total.grid(row=0, column=0, padx=8, pady=8, sticky="ew")
+        self.card_total.grid(row=0, column=0, padx=6, pady=6, sticky="ew")
         self.card_cash = self._make_card(cards, "현금/기타", "0원", "#4a90e2")
-        self.card_cash.grid(row=0, column=1, padx=8, pady=8, sticky="ew")
-        self.card_deposit = self._make_card(cards, "적금/예금 (현재가치)", "0원", ACCENT)
-        self.card_deposit.grid(row=0, column=2, padx=8, pady=8, sticky="ew")
+        self.card_cash.grid(row=0, column=1, padx=6, pady=6, sticky="ew")
+        self.card_deposit = self._make_card(cards, "적금/예금 (만기가치)", "0원", ACCENT)
+        self.card_deposit.grid(row=0, column=2, padx=6, pady=6, sticky="ew")
         self.card_stock = self._make_card(cards, "주식 평가액", "0원", "#e67e22")
-        self.card_stock.grid(row=0, column=3, padx=8, pady=8, sticky="ew")
-
+        self.card_stock.grid(row=0, column=3, padx=6, pady=6, sticky="ew")
         for c in range(4):
             cards.columnconfigure(c, weight=1)
 
-        # 이번 달 요약
-        ttk.Label(frame, text="이번 달 수입/지출", style="Sub.TLabel").pack(
-            anchor="w", padx=20, pady=(20, 6))
-        month_box = tk.Frame(frame, bg="white", relief="flat", bd=0)
-        month_box.pack(fill="x", padx=20, pady=4)
-        self.lbl_income = tk.Label(month_box, text="수입: 0원",
-                                   bg="white", fg=ACCENT,
+        # 2행 카드
+        cards2 = tk.Frame(frame, bg=BG)
+        cards2.pack(fill="x", padx=20, pady=4)
+        self.card_stock_pnl = self._make_card(cards2, "주식 평가손익", "0원", "#9b59b6")
+        self.card_stock_pnl.grid(row=0, column=0, padx=6, pady=6, sticky="ew")
+        self.card_realized = self._make_card(cards2, "올해 실현손익", "0원", "#16a085")
+        self.card_realized.grid(row=0, column=1, padx=6, pady=6, sticky="ew")
+        self.card_month = self._make_card(cards2, "이번 달 잔액", "0원", PRIMARY)
+        self.card_month.grid(row=0, column=2, padx=6, pady=6, sticky="ew")
+        self.card_points = self._make_card(cards2, "갓생 포인트", "0 pt", "#e91e63")
+        self.card_points.grid(row=0, column=3, padx=6, pady=6, sticky="ew")
+        for c in range(4):
+            cards2.columnconfigure(c, weight=1)
+
+        # 이번 달 수입/지출
+        ttk.Label(frame, text="이번 달 수입/지출",
+                  style="Sub.TLabel").pack(anchor="w", padx=20, pady=(16, 4))
+        mb = tk.Frame(frame, bg=CARD_BG, relief="flat")
+        mb.pack(fill="x", padx=20, pady=4)
+        self.lbl_income = tk.Label(mb, text="수입: 0원", bg=CARD_BG, fg=ACCENT,
                                    font=("Malgun Gothic", 12, "bold"),
-                                   padx=20, pady=14)
+                                   padx=20, pady=12)
         self.lbl_income.pack(side="left")
-        self.lbl_expense = tk.Label(month_box, text="지출: 0원",
-                                    bg="white", fg=DANGER,
+        self.lbl_expense = tk.Label(mb, text="지출: 0원", bg=CARD_BG, fg=DANGER,
                                     font=("Malgun Gothic", 12, "bold"),
-                                    padx=20, pady=14)
+                                    padx=20, pady=12)
         self.lbl_expense.pack(side="left")
-        self.lbl_balance = tk.Label(month_box, text="잔액: 0원",
-                                    bg="white", fg=PRIMARY,
+        self.lbl_balance = tk.Label(mb, text="잔액: 0원", bg=CARD_BG, fg=PRIMARY,
                                     font=("Malgun Gothic", 12, "bold"),
-                                    padx=20, pady=14)
+                                    padx=20, pady=12)
         self.lbl_balance.pack(side="left")
 
-        # 오늘/내일 일정
-        ttk.Label(frame, text="오늘 / 내일 할 일", style="Sub.TLabel").pack(
-            anchor="w", padx=20, pady=(20, 6))
-        sch_box = tk.Frame(frame, bg="white")
-        sch_box.pack(fill="both", expand=True, padx=20, pady=4)
-        self.dash_schedule = tk.Text(sch_box, height=10,
-                                     font=("Malgun Gothic", 10),
-                                     bg="white", fg=FG, relief="flat",
+        # 오늘/내일
+        ttk.Label(frame, text="오늘 / 내일 할 일",
+                  style="Sub.TLabel").pack(anchor="w", padx=20, pady=(14, 4))
+        sb = tk.Frame(frame, bg=CARD_BG)
+        sb.pack(fill="both", expand=True, padx=20, pady=4)
+        self.dash_schedule = tk.Text(sb, height=8, font=("Malgun Gothic", 10),
+                                     bg=CARD_BG, fg=FG, relief="flat",
                                      padx=14, pady=10)
         self.dash_schedule.pack(fill="both", expand=True)
         self.dash_schedule.configure(state="disabled")
 
     def _make_card(self, parent, title, value, color):
-        f = tk.Frame(parent, bg="white", bd=0, highlightthickness=0)
+        f = tk.Frame(parent, bg=CARD_BG, bd=0, highlightthickness=0)
         bar = tk.Frame(f, bg=color, height=4)
         bar.pack(fill="x")
-        inner = tk.Frame(f, bg="white")
-        inner.pack(fill="both", expand=True, padx=16, pady=14)
-        tk.Label(inner, text=title, bg="white", fg=MUTED,
+        inner = tk.Frame(f, bg=CARD_BG)
+        inner.pack(fill="both", expand=True, padx=14, pady=12)
+        tk.Label(inner, text=title, bg=CARD_BG, fg=MUTED,
                  font=("Malgun Gothic", 10)).pack(anchor="w")
-        val = tk.Label(inner, text=value, bg="white", fg=FG,
-                       font=("Malgun Gothic", 16, "bold"))
-        val.pack(anchor="w", pady=(6, 0))
+        val = tk.Label(inner, text=value, bg=CARD_BG, fg=FG,
+                       font=("Malgun Gothic", 15, "bold"))
+        val.pack(anchor="w", pady=(4, 0))
         f.value_label = val
         return f
 
     def refresh_dashboard(self):
-        # 자산 합계
         assets = self.db.get_assets()
         cash_total = sum(a["value"] for a in assets)
 
-        # 적금/예금 만기 가치
         deposits = self.db.get_deposits()
-        deposit_total = 0
-        for d in deposits:
-            calc = calculate_deposit(d)
-            deposit_total += calc["total"]
+        deposit_total = sum(calculate_deposit(d)["total"] for d in deposits)
 
-        # 주식 평가액
         stocks = self.db.get_stocks()
-        stock_total = sum((s["current_price"] or s["avg_price"]) * s["quantity"]
-                          for s in stocks)
+        stock_value = 0
+        stock_cost = 0
+        for s in stocks:
+            cur = s["current_price"] if s["current_price"] else s["avg_price"]
+            stock_value += cur * s["quantity"]
+            stock_cost += s["avg_price"] * s["quantity"]
+        stock_pnl = stock_value - stock_cost
 
-        total = cash_total + deposit_total + stock_total
-
+        total = cash_total + deposit_total + stock_value
         self.card_total.value_label.config(text=won(total))
         self.card_cash.value_label.config(text=won(cash_total))
         self.card_deposit.value_label.config(text=won(deposit_total))
-        self.card_stock.value_label.config(text=won(stock_total))
+        self.card_stock.value_label.config(text=won(stock_value))
 
-        # 이번 달 수입/지출
+        pnl_color = ACCENT if stock_pnl >= 0 else DANGER
+        self.card_stock_pnl.value_label.config(
+            text=f"{'+' if stock_pnl >= 0 else ''}{won(stock_pnl)}",
+            fg=pnl_color)
+
+        year = datetime.now().year
+        realized = self.db.get_trade_summary(year=year)
+        self.card_realized.value_label.config(
+            text=f"{'+' if realized >= 0 else ''}{won(realized)}",
+            fg=ACCENT if realized >= 0 else DANGER)
+
         now = datetime.now()
         s = self.db.get_monthly_summary(now.year, now.month)
+        bal = s["income"] - s["expense"]
+        self.card_month.value_label.config(
+            text=f"{'+' if bal >= 0 else ''}{won(bal)}",
+            fg=ACCENT if bal >= 0 else DANGER)
         self.lbl_income.config(text=f"수입: {won(s['income'])}")
         self.lbl_expense.config(text=f"지출: {won(s['expense'])}")
-        self.lbl_balance.config(text=f"잔액: {won(s['income'] - s['expense'])}")
+        self.lbl_balance.config(text=f"잔액: {won(bal)}")
 
-        # 일정
+        pts = self.db.get_total_points()
+        today_pts = self.db.get_today_points()
+        self.card_points.value_label.config(
+            text=f"{pts:,} pt  (오늘 +{today_pts})")
+
         today = date.today().strftime("%Y-%m-%d")
         tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
         today_sch = self.db.get_schedules(today)
@@ -219,22 +291,20 @@ class AssetManagerApp(tk.Tk):
         self.dash_schedule.delete("1.0", "end")
         self.dash_schedule.insert("end", f"[오늘 {today}]\n", "h")
         if today_sch:
-            for s in today_sch:
-                mark = "✅" if s["done"] else "⬜"
+            for sch in today_sch:
+                mark = "✅" if sch["done"] else "⬜"
                 self.dash_schedule.insert(
-                    "end", f"  {mark} {s['title']}  ({s['priority']})\n")
+                    "end", f"  {mark} {sch['title']}  ({sch['priority']})\n")
         else:
             self.dash_schedule.insert("end", "  (등록된 일정 없음)\n", "muted")
-
         self.dash_schedule.insert("end", f"\n[내일 {tomorrow}]\n", "h")
         if tomorrow_sch:
-            for s in tomorrow_sch:
-                mark = "✅" if s["done"] else "⬜"
+            for sch in tomorrow_sch:
+                mark = "✅" if sch["done"] else "⬜"
                 self.dash_schedule.insert(
-                    "end", f"  {mark} {s['title']}  ({s['priority']})\n")
+                    "end", f"  {mark} {sch['title']}  ({sch['priority']})\n")
         else:
             self.dash_schedule.insert("end", "  (등록된 일정 없음)\n", "muted")
-
         self.dash_schedule.tag_config("h", font=("Malgun Gothic", 11, "bold"),
                                      foreground=PRIMARY)
         self.dash_schedule.tag_config("muted", foreground=MUTED)
@@ -242,13 +312,12 @@ class AssetManagerApp(tk.Tk):
 
         self.summary_label.config(text=f"총 자산: {won(total)}")
 
-    # ========== 가계부 ==========
+    # ==================== 가계부 ====================
     def _build_ledger(self):
         frame = self.tab_ledger
         ttk.Label(frame, text="가계부 - 수입/지출 관리",
-                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(20, 10))
+                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(18, 8))
 
-        # 입력 폼
         form = tk.LabelFrame(frame, text="새 거래 추가", bg=BG, fg=FG,
                               font=("Malgun Gothic", 10, "bold"),
                               padx=10, pady=10, bd=1, relief="solid")
@@ -258,13 +327,11 @@ class AssetManagerApp(tk.Tk):
         self.tx_date = tk.Entry(form, width=12)
         self.tx_date.insert(0, date.today().strftime("%Y-%m-%d"))
         self.tx_date.grid(row=0, column=1, padx=4)
-
         tk.Label(form, text="구분", bg=BG).grid(row=0, column=2, sticky="w", padx=4)
         self.tx_type = ttk.Combobox(form, values=["income", "expense"],
                                     width=10, state="readonly")
         self.tx_type.set("expense")
         self.tx_type.grid(row=0, column=3, padx=4)
-
         tk.Label(form, text="카테고리", bg=BG).grid(row=0, column=4, sticky="w", padx=4)
         self.tx_cat = ttk.Combobox(form, values=[
             "식비", "교통", "주거", "통신", "쇼핑", "의료", "교육",
@@ -272,25 +339,19 @@ class AssetManagerApp(tk.Tk):
         ], width=10)
         self.tx_cat.set("식비")
         self.tx_cat.grid(row=0, column=5, padx=4)
-
         tk.Label(form, text="금액", bg=BG).grid(row=0, column=6, sticky="w", padx=4)
         self.tx_amount = tk.Entry(form, width=12)
         self.tx_amount.grid(row=0, column=7, padx=4)
-
         tk.Label(form, text="메모", bg=BG).grid(row=1, column=0, sticky="w",
                                                 padx=4, pady=(8, 0))
         self.tx_memo = tk.Entry(form, width=60)
         self.tx_memo.grid(row=1, column=1, columnspan=5, padx=4,
                           pady=(8, 0), sticky="we")
-
-        ttk.Button(form, text="추가", style="Primary.TButton",
-                   command=self.add_transaction).grid(
+        ttk.Button(form, text="추가", command=self.add_transaction).grid(
             row=1, column=6, columnspan=2, padx=4, pady=(8, 0), sticky="we")
 
-        # 거래 목록
         list_frame = tk.Frame(frame, bg=BG)
         list_frame.pack(fill="both", expand=True, padx=20, pady=10)
-
         cols = ("id", "date", "type", "category", "amount", "memo")
         self.tx_tree = ttk.Treeview(list_frame, columns=cols, show="headings")
         widths = (50, 100, 80, 100, 120, 400)
@@ -298,12 +359,10 @@ class AssetManagerApp(tk.Tk):
             self.tx_tree.heading(c, text=c.upper())
             self.tx_tree.column(c, width=w, anchor="w")
         self.tx_tree.pack(side="left", fill="both", expand=True)
-
         sb = ttk.Scrollbar(list_frame, orient="vertical",
                             command=self.tx_tree.yview)
         sb.pack(side="right", fill="y")
         self.tx_tree.configure(yscrollcommand=sb.set)
-
         ttk.Button(frame, text="선택 삭제", command=self.delete_transaction).pack(
             anchor="e", padx=20, pady=(0, 12))
 
@@ -339,11 +398,11 @@ class AssetManagerApp(tk.Tk):
                 won(r["amount"]), r["memo"] or ""
             ))
 
-    # ========== 적금/예금 ==========
+    # ==================== 적금/예금 ====================
     def _build_deposit(self):
         frame = self.tab_deposit
         ttk.Label(frame, text="적금 / 예금 (복리 계산)",
-                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(20, 10))
+                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(18, 8))
 
         form = tk.LabelFrame(frame, text="새 적금/예금 등록", bg=BG, fg=FG,
                               font=("Malgun Gothic", 10, "bold"),
@@ -355,17 +414,14 @@ class AssetManagerApp(tk.Tk):
         tk.Label(row1, text="상품명", bg=BG).pack(side="left", padx=4)
         self.dp_name = tk.Entry(row1, width=20)
         self.dp_name.pack(side="left", padx=4)
-
         tk.Label(row1, text="종류", bg=BG).pack(side="left", padx=4)
         self.dp_type = ttk.Combobox(row1, values=["예금", "적금"],
                                      width=8, state="readonly")
         self.dp_type.set("예금")
         self.dp_type.pack(side="left", padx=4)
-
         tk.Label(row1, text="원금/월납입금", bg=BG).pack(side="left", padx=4)
         self.dp_principal = tk.Entry(row1, width=14)
         self.dp_principal.pack(side="left", padx=4)
-
         tk.Label(row1, text="연이율(%)", bg=BG).pack(side="left", padx=4)
         self.dp_rate = tk.Entry(row1, width=8)
         self.dp_rate.pack(side="left", padx=4)
@@ -375,20 +431,16 @@ class AssetManagerApp(tk.Tk):
         tk.Label(row2, text="기간(개월)", bg=BG).pack(side="left", padx=4)
         self.dp_period = tk.Entry(row2, width=8)
         self.dp_period.pack(side="left", padx=4)
-
         tk.Label(row2, text="복리주기(연)", bg=BG).pack(side="left", padx=4)
         self.dp_compound = ttk.Combobox(
-            row2, values=[("12 (월)", 12), ("4 (분기)", 4),
-                          ("2 (반기)", 2), ("1 (연)", 1)],
+            row2, values=["12 (월)", "4 (분기)", "2 (반기)", "1 (연)"],
             width=10)
         self.dp_compound.set("12 (월)")
         self.dp_compound.pack(side="left", padx=4)
-
         tk.Label(row2, text="이자세율(%)", bg=BG).pack(side="left", padx=4)
         self.dp_tax = tk.Entry(row2, width=8)
         self.dp_tax.insert(0, "15.4")
         self.dp_tax.pack(side="left", padx=4)
-
         tk.Label(row2, text="시작일", bg=BG).pack(side="left", padx=4)
         self.dp_start = tk.Entry(row2, width=12)
         self.dp_start.insert(0, date.today().strftime("%Y-%m-%d"))
@@ -396,17 +448,15 @@ class AssetManagerApp(tk.Tk):
 
         btn_row = tk.Frame(form, bg=BG)
         btn_row.pack(fill="x", pady=(6, 0))
-        ttk.Button(btn_row, text="계산만 보기", command=self.preview_deposit).pack(
-            side="left", padx=4)
-        ttk.Button(btn_row, text="등록", style="Primary.TButton",
+        ttk.Button(btn_row, text="계산만 보기",
+                   command=self.preview_deposit).pack(side="left", padx=4)
+        ttk.Button(btn_row, text="등록",
                    command=self.add_deposit).pack(side="left", padx=4)
-
         self.dp_preview = tk.Label(form, text="", bg=BG, fg=PRIMARY,
                                     font=("Malgun Gothic", 10, "bold"),
                                     pady=6)
         self.dp_preview.pack(anchor="w")
 
-        # 목록
         list_frame = tk.Frame(frame, bg=BG)
         list_frame.pack(fill="both", expand=True, padx=20, pady=10)
         cols = ("id", "name", "type", "principal", "rate", "period",
@@ -422,15 +472,12 @@ class AssetManagerApp(tk.Tk):
                             command=self.dp_tree.yview)
         sb.pack(side="right", fill="y")
         self.dp_tree.configure(yscrollcommand=sb.set)
-
         ttk.Button(frame, text="선택 삭제", command=self.delete_deposit).pack(
             anchor="e", padx=20, pady=(0, 12))
 
     def _parse_compound(self):
-        val = self.dp_compound.get()
-        # "12 (월)" 같은 형태에서 숫자만 추출
         try:
-            return int(val.split()[0])
+            return int(self.dp_compound.get().split()[0])
         except Exception:
             return 12
 
@@ -467,10 +514,8 @@ class AssetManagerApp(tk.Tk):
                 principal, rate, period, self.dp_start.get(),
                 tax, compound, ""
             )
-            self.dp_name.delete(0, "end")
-            self.dp_principal.delete(0, "end")
-            self.dp_rate.delete(0, "end")
-            self.dp_period.delete(0, "end")
+            for w in (self.dp_name, self.dp_principal, self.dp_rate, self.dp_period):
+                w.delete(0, "end")
             self.dp_preview.config(text="")
             self.refresh_deposit()
             self.refresh_dashboard()
@@ -499,16 +544,15 @@ class AssetManagerApp(tk.Tk):
                 won(calc["total"]), won(calc["interest_net"])
             ))
 
-    # ========== 주식 ==========
+    # ==================== 주식 (개선) ====================
     def _build_stock(self):
         frame = self.tab_stock
         ttk.Label(frame, text="주식 포트폴리오",
-                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(20, 10))
-
-        info = tk.Label(frame, text="💡 한국 주식은 종목코드 뒤에 .KS(코스피) 또는 .KQ(코스닥)를 붙이세요. "
-                                    "예: 삼성전자 → 005930.KS",
-                        bg=BG, fg=MUTED, font=("Malgun Gothic", 9))
-        info.pack(anchor="w", padx=20)
+                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(18, 4))
+        tk.Label(frame, text="💡 한국 주식: 005930.KS (코스피), .KQ (코스닥) | 미국: AAPL, TSLA. "
+                            "가격이 이상하면 종목 클릭 후 '수동 가격 사용'을 켜세요.",
+                 bg=BG, fg=MUTED, font=("Malgun Gothic", 9)).pack(
+            anchor="w", padx=20)
 
         form = tk.LabelFrame(frame, text="새 종목 추가", bg=BG, fg=FG,
                               font=("Malgun Gothic", 10, "bold"),
@@ -516,53 +560,63 @@ class AssetManagerApp(tk.Tk):
         form.pack(fill="x", padx=20, pady=6)
 
         tk.Label(form, text="티커", bg=BG).grid(row=0, column=0, padx=4)
-        self.st_ticker = tk.Entry(form, width=14)
+        self.st_ticker = tk.Entry(form, width=12)
         self.st_ticker.grid(row=0, column=1, padx=4)
         tk.Label(form, text="종목명", bg=BG).grid(row=0, column=2, padx=4)
-        self.st_name = tk.Entry(form, width=18)
+        self.st_name = tk.Entry(form, width=16)
         self.st_name.grid(row=0, column=3, padx=4)
         tk.Label(form, text="수량", bg=BG).grid(row=0, column=4, padx=4)
-        self.st_qty = tk.Entry(form, width=10)
+        self.st_qty = tk.Entry(form, width=8)
         self.st_qty.grid(row=0, column=5, padx=4)
         tk.Label(form, text="평균매수가", bg=BG).grid(row=0, column=6, padx=4)
         self.st_avg = tk.Entry(form, width=12)
         self.st_avg.grid(row=0, column=7, padx=4)
         tk.Label(form, text="통화", bg=BG).grid(row=0, column=8, padx=4)
-        self.st_currency = ttk.Combobox(form, values=["KRW", "USD"],
+        self.st_currency = ttk.Combobox(form, values=["KRW", "USD", "JPY"],
                                          width=6, state="readonly")
         self.st_currency.set("KRW")
         self.st_currency.grid(row=0, column=9, padx=4)
-        ttk.Button(form, text="추가", style="Primary.TButton",
-                   command=self.add_stock).grid(row=0, column=10, padx=8)
+        ttk.Button(form, text="추가", command=self.add_stock).grid(
+            row=0, column=10, padx=8)
 
-        toolbar = tk.Frame(frame, bg=BG)
-        toolbar.pack(fill="x", padx=20, pady=4)
-        ttk.Button(toolbar, text="🔄 시세 일괄 업데이트 (API)",
+        tb = tk.Frame(frame, bg=BG)
+        tb.pack(fill="x", padx=20, pady=4)
+        ttk.Button(tb, text="🔄 시세 일괄 업데이트",
                    command=self.update_all_prices).pack(side="left")
-        self.st_status = tk.Label(toolbar, text="", bg=BG, fg=MUTED,
+        ttk.Button(tb, text="✏️ 선택 가격 수동 변경",
+                   command=self.manual_update_price).pack(side="left", padx=6)
+        ttk.Button(tb, text="🔒 수동 모드 토글",
+                   command=self.toggle_manual_mode).pack(side="left")
+        self.st_status = tk.Label(tb, text="", bg=BG, fg=MUTED,
                                    font=("Malgun Gothic", 9))
         self.st_status.pack(side="left", padx=10)
-        ttk.Button(toolbar, text="선택 삭제",
+        ttk.Button(tb, text="선택 삭제",
                    command=self.delete_stock).pack(side="right")
-        ttk.Button(toolbar, text="선택 가격 수동 변경",
-                   command=self.manual_update_price).pack(side="right", padx=6)
 
         list_frame = tk.Frame(frame, bg=BG)
-        list_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        list_frame.pack(fill="both", expand=True, padx=20, pady=8)
         cols = ("id", "ticker", "name", "qty", "avg", "current",
-                "value", "pnl", "pnl_pct", "updated")
+                "value", "pnl", "pnl_pct", "src", "mode", "updated")
         headers = ("ID", "티커", "종목명", "수량", "평균매수가", "현재가",
-                   "평가액", "손익", "수익률", "업데이트")
-        widths = (40, 90, 130, 70, 90, 90, 110, 110, 80, 130)
+                   "평가액", "손익", "수익률", "출처", "모드", "업데이트")
+        widths = (40, 90, 130, 60, 90, 90, 110, 110, 70, 70, 60, 130)
         self.st_tree = ttk.Treeview(list_frame, columns=cols, show="headings")
         for c, h, w in zip(cols, headers, widths):
             self.st_tree.heading(c, text=h)
             self.st_tree.column(c, width=w, anchor="w")
+        self.st_tree.tag_configure("plus", foreground=ACCENT)
+        self.st_tree.tag_configure("minus", foreground=DANGER)
+        self.st_tree.tag_configure("warn", background="#fff3cd")
         self.st_tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(list_frame, orient="vertical",
                             command=self.st_tree.yview)
         sb.pack(side="right", fill="y")
         self.st_tree.configure(yscrollcommand=sb.set)
+
+        # 요약 줄
+        self.st_summary = tk.Label(frame, text="", bg=BG, fg=FG,
+                                    font=("Malgun Gothic", 11, "bold"))
+        self.st_summary.pack(anchor="e", padx=20, pady=(0, 12))
 
     def add_stock(self):
         try:
@@ -587,14 +641,17 @@ class AssetManagerApp(tk.Tk):
         sid = self.st_tree.item(sel[0])["values"][0]
         dlg = tk.Toplevel(self)
         dlg.title("현재가 수동 입력")
-        dlg.geometry("260x110")
-        tk.Label(dlg, text="새로운 현재가:").pack(pady=10)
-        e = tk.Entry(dlg)
+        dlg.geometry("280x130")
+        tk.Label(dlg, text="새로운 현재가:", font=("Malgun Gothic", 10)).pack(pady=10)
+        e = tk.Entry(dlg, width=20)
         e.pack()
+        e.focus()
 
         def save():
             try:
-                self.db.update_stock_price(sid, float(e.get().replace(",", "")))
+                price = float(e.get().replace(",", ""))
+                self.db.update_stock_price(sid, price, source="manual")
+                self.db.toggle_stock_manual(sid, True)
                 dlg.destroy()
                 self.refresh_stock()
                 self.refresh_dashboard()
@@ -602,25 +659,63 @@ class AssetManagerApp(tk.Tk):
                 messagebox.showerror("오류", str(ex))
 
         ttk.Button(dlg, text="저장", command=save).pack(pady=8)
+        dlg.bind("<Return>", lambda _: save())
+
+    def toggle_manual_mode(self):
+        sel = self.st_tree.selection()
+        if not sel:
+            return
+        vals = self.st_tree.item(sel[0])["values"]
+        sid = vals[0]
+        # 현재 모드 확인
+        for s in self.db.get_stocks():
+            if s["id"] == sid:
+                new_mode = not bool(s["use_manual"])
+                self.db.toggle_stock_manual(sid, new_mode)
+                self.refresh_stock()
+                self.st_status.config(
+                    text=f"{vals[1]}: 수동 모드 {'ON' if new_mode else 'OFF'}")
+                return
 
     def update_all_prices(self):
-        self.st_status.config(text="시세 가져오는 중... (yfinance)")
+        self.st_status.config(text="시세 가져오는 중...")
         self.update_idletasks()
 
         def worker():
             stocks = self.db.get_stocks()
-            ok = fail = 0
+            ok = fail = skip = warn = 0
+            messages = []
             for s in stocks:
-                price = fetch_stock_price(s["ticker"])
-                if price:
-                    self.db.update_stock_price(s["id"], price)
+                if s.get("use_manual"):
+                    skip += 1
+                    continue
+                quote = fetch_stock_quote(s["ticker"])
+                if quote and quote["price"] > 0:
+                    p = quote["price"]
+                    # 이상치 경고: 평균매수가와 ±70% 이상 차이
+                    if s["avg_price"] > 0:
+                        diff_pct = (p - s["avg_price"]) / s["avg_price"] * 100
+                        if abs(diff_pct) > 70:
+                            warn += 1
+                            messages.append(
+                                f"⚠️ {s['ticker']}: 평균가 대비 {diff_pct:+.0f}% — "
+                                f"확인 필요 (가져온 가격 {p:,.2f} {quote['currency']})")
+                    self.db.update_stock_price(
+                        s["id"], p, source=quote["source"],
+                        currency=quote["currency"])
                     ok += 1
                 else:
                     fail += 1
+                    messages.append(f"❌ {s['ticker']}: 가격 조회 실패")
 
             def done():
-                self.st_status.config(
-                    text=f"업데이트 완료: 성공 {ok}건, 실패 {fail}건")
+                msg = f"완료: 성공 {ok} / 실패 {fail} / 수동제외 {skip}"
+                if warn:
+                    msg += f" / 경고 {warn}"
+                self.st_status.config(text=msg)
+                if messages:
+                    messagebox.showwarning(
+                        "주가 조회 알림", "\n".join(messages[:10]))
                 self.refresh_stock()
                 self.refresh_dashboard()
             self.after(0, done)
@@ -639,24 +734,197 @@ class AssetManagerApp(tk.Tk):
     def refresh_stock(self):
         for i in self.st_tree.get_children():
             self.st_tree.delete(i)
+        total_value = 0
+        total_cost = 0
         for s in self.db.get_stocks():
-            cur = s["current_price"] or s["avg_price"]
+            cur = s["current_price"] if s["current_price"] else s["avg_price"]
             value = cur * s["quantity"]
             cost = s["avg_price"] * s["quantity"]
             pnl = value - cost
             pct = (pnl / cost * 100) if cost else 0
-            self.st_tree.insert("", "end", values=(
+            total_value += value
+            total_cost += cost
+            currency = s.get("currency", "KRW")
+            mode = "수동" if s.get("use_manual") else "API"
+            src = s.get("price_source") or "-"
+            tag = "plus" if pnl >= 0 else "minus"
+            # 평균매수가와 너무 차이나면 경고색
+            warn = (s["avg_price"] > 0 and
+                    abs((cur - s["avg_price"]) / s["avg_price"]) > 0.7)
+            tags = (tag, "warn") if warn else (tag,)
+            self.st_tree.insert("", "end", tags=tags, values=(
                 s["id"], s["ticker"], s["name"], s["quantity"],
-                won(s["avg_price"]), won(cur), won(value),
-                won(pnl), f"{pct:+.2f}%",
+                money(s["avg_price"], currency), money(cur, currency),
+                money(value, currency),
+                f"{'+' if pnl >= 0 else ''}{money(pnl, currency)}",
+                f"{pct:+.2f}%", src, mode,
                 s["last_updated"] or "-"
             ))
+        # 요약
+        total_pnl = total_value - total_cost
+        total_pct = (total_pnl / total_cost * 100) if total_cost else 0
+        sign = "+" if total_pnl >= 0 else ""
+        color = ACCENT if total_pnl >= 0 else DANGER
+        self.st_summary.config(
+            text=f"총 평가액: {won(total_value)}  |  "
+                 f"총 원가: {won(total_cost)}  |  "
+                 f"평가손익: {sign}{won(total_pnl)} ({total_pct:+.2f}%)",
+            fg=color)
 
-    # ========== 기타 자산 ==========
+    # ==================== 매매 손익 ====================
+    def _build_trade(self):
+        frame = self.tab_trade
+        ttk.Label(frame, text="주식 매매 손익 가계부",
+                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(18, 4))
+        tk.Label(frame, text="💡 매수/매도를 기록하면 평균매수가 기준으로 실현손익이 자동 계산됩니다.",
+                 bg=BG, fg=MUTED, font=("Malgun Gothic", 9)).pack(
+            anchor="w", padx=20, pady=(0, 6))
+
+        form = tk.LabelFrame(frame, text="새 매매 기록", bg=BG, fg=FG,
+                              font=("Malgun Gothic", 10, "bold"),
+                              padx=10, pady=10, bd=1, relief="solid")
+        form.pack(fill="x", padx=20, pady=6)
+
+        tk.Label(form, text="날짜", bg=BG).grid(row=0, column=0, padx=4)
+        self.tr_date = tk.Entry(form, width=12)
+        self.tr_date.insert(0, date.today().strftime("%Y-%m-%d"))
+        self.tr_date.grid(row=0, column=1, padx=4)
+        tk.Label(form, text="구분", bg=BG).grid(row=0, column=2, padx=4)
+        self.tr_type = ttk.Combobox(form, values=["buy", "sell"],
+                                     width=8, state="readonly")
+        self.tr_type.set("buy")
+        self.tr_type.grid(row=0, column=3, padx=4)
+        tk.Label(form, text="티커", bg=BG).grid(row=0, column=4, padx=4)
+        self.tr_ticker = tk.Entry(form, width=12)
+        self.tr_ticker.grid(row=0, column=5, padx=4)
+        tk.Label(form, text="종목명", bg=BG).grid(row=0, column=6, padx=4)
+        self.tr_name = tk.Entry(form, width=14)
+        self.tr_name.grid(row=0, column=7, padx=4)
+        tk.Label(form, text="수량", bg=BG).grid(row=1, column=0, padx=4, pady=(8, 0))
+        self.tr_qty = tk.Entry(form, width=12)
+        self.tr_qty.grid(row=1, column=1, padx=4, pady=(8, 0))
+        tk.Label(form, text="가격", bg=BG).grid(row=1, column=2, padx=4, pady=(8, 0))
+        self.tr_price = tk.Entry(form, width=12)
+        self.tr_price.grid(row=1, column=3, padx=4, pady=(8, 0))
+        tk.Label(form, text="수수료/세금", bg=BG).grid(row=1, column=4, padx=4, pady=(8, 0))
+        self.tr_fees = tk.Entry(form, width=10)
+        self.tr_fees.insert(0, "0")
+        self.tr_fees.grid(row=1, column=5, padx=4, pady=(8, 0))
+        tk.Label(form, text="메모", bg=BG).grid(row=1, column=6, padx=4, pady=(8, 0))
+        self.tr_memo = tk.Entry(form, width=18)
+        self.tr_memo.grid(row=1, column=7, padx=4, pady=(8, 0))
+        ttk.Button(form, text="추가", command=self.add_trade).grid(
+            row=0, column=8, rowspan=2, padx=8, sticky="ns")
+
+        tb = tk.Frame(frame, bg=BG)
+        tb.pack(fill="x", padx=20, pady=4)
+        tk.Label(tb, text="연도 필터:", bg=BG).pack(side="left")
+        self.tr_year = ttk.Combobox(tb, width=10, state="readonly",
+                                     values=["전체"] + [str(y) for y in range(
+                                         datetime.now().year, datetime.now().year - 10, -1)])
+        self.tr_year.set(str(datetime.now().year))
+        self.tr_year.pack(side="left", padx=4)
+        self.tr_year.bind("<<ComboboxSelected>>", lambda _: self.refresh_trade())
+        ttk.Button(tb, text="선택 삭제", command=self.delete_trade).pack(side="right")
+
+        list_frame = tk.Frame(frame, bg=BG)
+        list_frame.pack(fill="both", expand=True, padx=20, pady=8)
+        cols = ("id", "date", "type", "ticker", "name", "qty", "price", "amount", "fees", "pnl", "memo")
+        headers = ("ID", "날짜", "구분", "티커", "종목명", "수량", "가격", "거래금액", "수수료", "실현손익", "메모")
+        widths = (40, 90, 60, 80, 120, 70, 90, 110, 80, 110, 200)
+        self.tr_tree = ttk.Treeview(list_frame, columns=cols, show="headings")
+        for c, h, w in zip(cols, headers, widths):
+            self.tr_tree.heading(c, text=h)
+            self.tr_tree.column(c, width=w, anchor="w")
+        self.tr_tree.tag_configure("plus", foreground=ACCENT)
+        self.tr_tree.tag_configure("minus", foreground=DANGER)
+        self.tr_tree.tag_configure("buy", foreground="#4a90e2")
+        self.tr_tree.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(list_frame, orient="vertical",
+                            command=self.tr_tree.yview)
+        sb.pack(side="right", fill="y")
+        self.tr_tree.configure(yscrollcommand=sb.set)
+
+        self.tr_summary = tk.Label(frame, text="", bg=BG, fg=FG,
+                                    font=("Malgun Gothic", 11, "bold"))
+        self.tr_summary.pack(anchor="e", padx=20, pady=(0, 12))
+
+    def add_trade(self):
+        try:
+            ticker = self.tr_ticker.get().strip().upper()
+            name = self.tr_name.get().strip()
+            qty = float(self.tr_qty.get())
+            price = float(self.tr_price.get().replace(",", ""))
+            fees = float(self.tr_fees.get().replace(",", "") or 0)
+            trade_type = self.tr_type.get()
+
+            # 매도면 평균매수가 기준으로 실현손익 계산
+            realized = 0
+            if trade_type == "sell":
+                avg_buy, _ = self.db.get_avg_buy_price(ticker)
+                if avg_buy > 0:
+                    realized = (price - avg_buy) * qty - fees
+
+            self.db.add_stock_trade(
+                self.tr_date.get(), ticker, name, trade_type,
+                qty, price, fees, realized, self.tr_memo.get()
+            )
+            for e in (self.tr_ticker, self.tr_name, self.tr_qty,
+                       self.tr_price, self.tr_memo):
+                e.delete(0, "end")
+            self.tr_fees.delete(0, "end")
+            self.tr_fees.insert(0, "0")
+            self.refresh_trade()
+            self.refresh_dashboard()
+        except Exception as e:
+            messagebox.showerror("입력 오류", f"입력을 확인해주세요.\n{e}")
+
+    def delete_trade(self):
+        sel = self.tr_tree.selection()
+        if not sel:
+            return
+        tid = self.tr_tree.item(sel[0])["values"][0]
+        self.db.delete_stock_trade(tid)
+        self.refresh_trade()
+        self.refresh_dashboard()
+
+    def refresh_trade(self):
+        for i in self.tr_tree.get_children():
+            self.tr_tree.delete(i)
+        year = self.tr_year.get() if hasattr(self, "tr_year") else "전체"
+        year_arg = None if year == "전체" else year
+        trades = self.db.get_stock_trades(year=year_arg)
+        total_pnl = 0
+        total_buy = 0
+        total_sell = 0
+        for t in trades:
+            amount = t["quantity"] * t["price"]
+            if t["trade_type"] == "buy":
+                total_buy += amount + (t["fees"] or 0)
+                tag = "buy"
+                pnl_disp = "-"
+            else:
+                total_sell += amount - (t["fees"] or 0)
+                total_pnl += t["realized_pnl"] or 0
+                tag = "plus" if (t["realized_pnl"] or 0) >= 0 else "minus"
+                rp = t["realized_pnl"] or 0
+                pnl_disp = f"{'+' if rp >= 0 else ''}{won(rp)}"
+            self.tr_tree.insert("", "end", tags=(tag,), values=(
+                t["id"], t["date"], t["trade_type"], t["ticker"], t["name"],
+                t["quantity"], won(t["price"]), won(amount), won(t["fees"] or 0),
+                pnl_disp, t["memo"] or ""
+            ))
+        sign = "+" if total_pnl >= 0 else ""
+        self.tr_summary.config(
+            text=f"매수 {won(total_buy)}  |  매도 {won(total_sell)}  |  "
+                 f"실현손익 {sign}{won(total_pnl)}",
+            fg=ACCENT if total_pnl >= 0 else DANGER)
+
+    # ==================== 기타 자산 ====================
     def _build_asset(self):
         frame = self.tab_asset
         ttk.Label(frame, text="기타 자산 (현금, 부동산 등)",
-                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(20, 10))
+                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(18, 8))
 
         form = tk.LabelFrame(frame, text="새 자산 추가", bg=BG, fg=FG,
                               font=("Malgun Gothic", 10, "bold"),
@@ -678,8 +946,8 @@ class AssetManagerApp(tk.Tk):
         tk.Label(form, text="메모", bg=BG).grid(row=0, column=6, padx=4)
         self.as_memo = tk.Entry(form, width=24)
         self.as_memo.grid(row=0, column=7, padx=4)
-        ttk.Button(form, text="추가", style="Primary.TButton",
-                   command=self.add_asset).grid(row=0, column=8, padx=8)
+        ttk.Button(form, text="추가", command=self.add_asset).grid(
+            row=0, column=8, padx=8)
 
         list_frame = tk.Frame(frame, bg=BG)
         list_frame.pack(fill="both", expand=True, padx=20, pady=10)
@@ -695,12 +963,11 @@ class AssetManagerApp(tk.Tk):
                             command=self.as_tree.yview)
         sb.pack(side="right", fill="y")
         self.as_tree.configure(yscrollcommand=sb.set)
-
-        toolbar = tk.Frame(frame, bg=BG)
-        toolbar.pack(fill="x", padx=20, pady=(0, 12))
-        ttk.Button(toolbar, text="선택 금액 수정",
+        tb = tk.Frame(frame, bg=BG)
+        tb.pack(fill="x", padx=20, pady=(0, 12))
+        ttk.Button(tb, text="선택 금액 수정",
                    command=self.update_asset).pack(side="right", padx=6)
-        ttk.Button(toolbar, text="선택 삭제",
+        ttk.Button(tb, text="선택 삭제",
                    command=self.delete_asset).pack(side="right")
 
     def add_asset(self):
@@ -722,10 +989,11 @@ class AssetManagerApp(tk.Tk):
         aid = self.as_tree.item(sel[0])["values"][0]
         dlg = tk.Toplevel(self)
         dlg.title("자산 금액 수정")
-        dlg.geometry("260x110")
+        dlg.geometry("280x120")
         tk.Label(dlg, text="새로운 평가액:").pack(pady=10)
-        e = tk.Entry(dlg)
+        e = tk.Entry(dlg, width=20)
         e.pack()
+        e.focus()
 
         def save():
             try:
@@ -736,6 +1004,7 @@ class AssetManagerApp(tk.Tk):
             except Exception as ex:
                 messagebox.showerror("오류", str(ex))
         ttk.Button(dlg, text="저장", command=save).pack(pady=8)
+        dlg.bind("<Return>", lambda _: save())
 
     def delete_asset(self):
         sel = self.as_tree.selection()
@@ -756,114 +1025,558 @@ class AssetManagerApp(tk.Tk):
                 a["updated_at"] or "-"
             ))
 
-    # ========== 일정 ==========
-    def _build_schedule(self):
-        frame = self.tab_schedule
-        ttk.Label(frame, text="일정 / 목표 관리",
-                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(20, 10))
+    # ==================== 갓생살기 ====================
+    def _build_godlife(self):
+        frame = self.tab_godlife
+        # 상단: 명언 + 포인트
+        top = tk.Frame(frame, bg=BG)
+        top.pack(fill="x", padx=20, pady=(14, 4))
+        tk.Label(top, text="✨ 갓생살기 프로젝트", bg=BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 16, "bold")).pack(side="left")
+        self.godlife_summary = tk.Label(top, text="", bg=BG, fg=MUTED,
+                                         font=("Malgun Gothic", 10))
+        self.godlife_summary.pack(side="right")
+        tk.Label(frame, text=f"💬  {self.today_quote}",
+                 bg=BG, fg=FG, font=("Malgun Gothic", 11, "italic")).pack(
+            anchor="w", padx=20, pady=(0, 8))
 
-        form = tk.LabelFrame(frame, text="새 일정 추가", bg=BG, fg=FG,
+        # 서브 탭
+        sub = ttk.Notebook(frame)
+        sub.pack(fill="both", expand=True, padx=14, pady=4)
+
+        self.sub_habit = ttk.Frame(sub)
+        self.sub_goal = ttk.Frame(sub)
+        self.sub_todo = ttk.Frame(sub)
+        sub.add(self.sub_habit, text="🔥 습관 트래커")
+        sub.add(self.sub_goal, text="🎯 장기 목표")
+        sub.add(self.sub_todo, text="📋 오늘 할 일")
+
+        self._build_habit()
+        self._build_goal()
+        self._build_todo()
+
+    # ---- 습관 ----
+    def _build_habit(self):
+        frame = self.sub_habit
+
+        # 추가 폼
+        form = tk.LabelFrame(frame, text="새 습관 추가", bg=BG, fg=FG,
                               font=("Malgun Gothic", 10, "bold"),
-                              padx=10, pady=10, bd=1, relief="solid")
-        form.pack(fill="x", padx=20, pady=6)
+                              padx=10, pady=8, bd=1, relief="solid")
+        form.pack(fill="x", padx=14, pady=8)
+
+        tk.Label(form, text="아이콘", bg=BG).pack(side="left", padx=4)
+        self.hb_icon = tk.Entry(form, width=4)
+        self.hb_icon.insert(0, "🏃")
+        self.hb_icon.pack(side="left", padx=4)
+        tk.Label(form, text="습관 이름", bg=BG).pack(side="left", padx=4)
+        self.hb_name = tk.Entry(form, width=22)
+        self.hb_name.pack(side="left", padx=4)
+        tk.Label(form, text="카테고리", bg=BG).pack(side="left", padx=4)
+        self.hb_cat = ttk.Combobox(form, values=list(CATEGORY_COLORS.keys()),
+                                    width=10, state="readonly")
+        self.hb_cat.set("건강")
+        self.hb_cat.pack(side="left", padx=4)
+        tk.Label(form, text="포인트", bg=BG).pack(side="left", padx=4)
+        self.hb_pts = tk.Entry(form, width=6)
+        self.hb_pts.insert(0, "10")
+        self.hb_pts.pack(side="left", padx=4)
+        ttk.Button(form, text="추가", command=self.add_habit).pack(side="left", padx=8)
+
+        # 카드 리스트 (스크롤 가능)
+        wrap = tk.Frame(frame, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=14, pady=4)
+        canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.habit_container = tk.Frame(canvas, bg=BG)
+        canvas.create_window((0, 0), window=self.habit_container, anchor="nw")
+        self.habit_container.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        self._habit_canvas = canvas
+
+    def add_habit(self):
+        name = self.hb_name.get().strip()
+        if not name:
+            messagebox.showwarning("입력 필요", "습관 이름을 입력해주세요.")
+            return
+        try:
+            pts = int(self.hb_pts.get() or 10)
+        except ValueError:
+            pts = 10
+        cat = self.hb_cat.get()
+        self.db.add_habit(
+            name=name, icon=self.hb_icon.get() or "✅",
+            color=CATEGORY_COLORS.get(cat, ACCENT),
+            points=pts, category=cat
+        )
+        self.hb_name.delete(0, "end")
+        self.refresh_habit()
+        self.refresh_dashboard()
+
+    def refresh_habit(self):
+        # 기존 카드 제거
+        for w in self.habit_container.winfo_children():
+            w.destroy()
+
+        habits = self.db.get_habits()
+        if not habits:
+            tk.Label(self.habit_container,
+                     text="아직 등록된 습관이 없어요. 위에서 첫 습관을 추가해보세요!",
+                     bg=BG, fg=MUTED,
+                     font=("Malgun Gothic", 11)).pack(pady=30)
+            self._update_godlife_summary()
+            return
+
+        today = date.today().strftime("%Y-%m-%d")
+        for h in habits:
+            self._make_habit_card(h, today)
+        self._update_godlife_summary()
+
+    def _make_habit_card(self, habit, today):
+        card = tk.Frame(self.habit_container, bg=CARD_BG, bd=0,
+                        highlightthickness=1, highlightbackground=SOFT)
+        card.pack(fill="x", padx=4, pady=4)
+
+        # 좌측 색띠
+        bar = tk.Frame(card, bg=habit["color"], width=6)
+        bar.pack(side="left", fill="y")
+
+        inner = tk.Frame(card, bg=CARD_BG)
+        inner.pack(side="left", fill="both", expand=True, padx=12, pady=10)
+
+        # 상단: 아이콘 + 이름 + streak + 포인트
+        top = tk.Frame(inner, bg=CARD_BG)
+        top.pack(fill="x")
+        tk.Label(top, text=f"{habit['icon']}  {habit['name']}",
+                 bg=CARD_BG, fg=FG,
+                 font=("Malgun Gothic", 12, "bold")).pack(side="left")
+        streak = self.db.calculate_streak(habit["id"])
+        tk.Label(top, text=f"🔥 {streak}일 연속", bg=CARD_BG, fg=DANGER,
+                 font=("Malgun Gothic", 10, "bold")).pack(side="left", padx=14)
+        tk.Label(top, text=f"+{habit['points']}pt | {habit['category']}",
+                 bg=CARD_BG, fg=MUTED,
+                 font=("Malgun Gothic", 9)).pack(side="left", padx=8)
+
+        # 우측 버튼
+        btn_frame = tk.Frame(top, bg=CARD_BG)
+        btn_frame.pack(side="right")
+        logs = self.db.get_habit_logs(habit["id"], days=8)
+        checked = today in logs
+        btn_text = "✅ 오늘 완료" if checked else "⬜ 오늘 체크"
+        btn_bg = ACCENT if checked else SOFT
+        btn_fg = "white" if checked else FG
+        b = tk.Button(btn_frame, text=btn_text, bg=btn_bg, fg=btn_fg,
+                       font=("Malgun Gothic", 10, "bold"),
+                       relief="flat", padx=12, pady=6,
+                       command=lambda hid=habit["id"]: self.toggle_habit(hid))
+        b.pack(side="right", padx=4)
+        tk.Button(btn_frame, text="삭제", bg=CARD_BG, fg=MUTED,
+                   relief="flat", font=("Malgun Gothic", 9),
+                   command=lambda hid=habit["id"]: self.delete_habit(hid)).pack(side="right")
+
+        # 하단: 최근 7일 도트
+        dot_row = tk.Frame(inner, bg=CARD_BG)
+        dot_row.pack(fill="x", pady=(8, 0))
+        tk.Label(dot_row, text="최근 7일: ", bg=CARD_BG, fg=MUTED,
+                 font=("Malgun Gothic", 9)).pack(side="left")
+        for i in range(6, -1, -1):
+            d = (date.today() - timedelta(days=i)).strftime("%Y-%m-%d")
+            done = d in logs
+            color = habit["color"] if done else SOFT
+            dot = tk.Label(dot_row, text="●" if done else "○",
+                           bg=CARD_BG, fg=color,
+                           font=("Malgun Gothic", 14))
+            dot.pack(side="left", padx=2)
+            label_text = (date.today() - timedelta(days=i)).strftime("%m/%d")
+            tk.Label(dot_row, text=label_text, bg=CARD_BG, fg=MUTED,
+                     font=("Malgun Gothic", 8)).pack(side="left", padx=(0, 6))
+
+    def toggle_habit(self, hid):
+        today = date.today().strftime("%Y-%m-%d")
+        self.db.toggle_habit_log(hid, today)
+        self.refresh_habit()
+        self.refresh_dashboard()
+
+    def delete_habit(self, hid):
+        if messagebox.askyesno("삭제 확인", "이 습관과 모든 기록을 삭제할까요?"):
+            self.db.delete_habit(hid)
+            self.refresh_habit()
+            self.refresh_dashboard()
+
+    def _update_godlife_summary(self):
+        habits = self.db.get_habits()
+        today = date.today().strftime("%Y-%m-%d")
+        done_today = 0
+        for h in habits:
+            if today in self.db.get_habit_logs(h["id"], days=1):
+                done_today += 1
+        total_pts = self.db.get_total_points()
+        today_pts = self.db.get_today_points()
+        goals = self.db.get_goals(status="active")
+        self.godlife_summary.config(
+            text=f"오늘 완료: {done_today}/{len(habits)} | "
+                 f"오늘 +{today_pts}pt | 총 {total_pts}pt | "
+                 f"진행중 목표 {len(goals)}개")
+
+    # ---- 목표 ----
+    def _build_goal(self):
+        frame = self.sub_goal
+        form = tk.LabelFrame(frame, text="새 장기 목표 추가", bg=BG, fg=FG,
+                              font=("Malgun Gothic", 10, "bold"),
+                              padx=10, pady=8, bd=1, relief="solid")
+        form.pack(fill="x", padx=14, pady=8)
+
+        tk.Label(form, text="제목", bg=BG).pack(side="left", padx=4)
+        self.gl_title = tk.Entry(form, width=28)
+        self.gl_title.pack(side="left", padx=4)
+        tk.Label(form, text="카테고리", bg=BG).pack(side="left", padx=4)
+        self.gl_cat = ttk.Combobox(form, values=list(CATEGORY_COLORS.keys()),
+                                    width=10, state="readonly")
+        self.gl_cat.set("재정")
+        self.gl_cat.pack(side="left", padx=4)
+        tk.Label(form, text="목표일", bg=BG).pack(side="left", padx=4)
+        self.gl_date = tk.Entry(form, width=12)
+        self.gl_date.pack(side="left", padx=4)
+        tk.Label(form, text="설명", bg=BG).pack(side="left", padx=4)
+        self.gl_desc = tk.Entry(form, width=20)
+        self.gl_desc.pack(side="left", padx=4)
+        ttk.Button(form, text="추가", command=self.add_goal).pack(side="left", padx=8)
+
+        wrap = tk.Frame(frame, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=14, pady=4)
+        canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.goal_container = tk.Frame(canvas, bg=BG)
+        canvas.create_window((0, 0), window=self.goal_container, anchor="nw")
+        self.goal_container.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+    def add_goal(self):
+        title = self.gl_title.get().strip()
+        if not title:
+            messagebox.showwarning("입력 필요", "목표 제목을 입력해주세요.")
+            return
+        cat = self.gl_cat.get()
+        self.db.add_goal(
+            title=title,
+            description=self.gl_desc.get(),
+            category=cat,
+            target_date=self.gl_date.get() or None,
+            color=CATEGORY_COLORS.get(cat, ACCENT)
+        )
+        self.gl_title.delete(0, "end")
+        self.gl_date.delete(0, "end")
+        self.gl_desc.delete(0, "end")
+        self.refresh_goal()
+        self.refresh_dashboard()
+
+    def refresh_goal(self):
+        for w in self.goal_container.winfo_children():
+            w.destroy()
+        goals = self.db.get_goals()
+        if not goals:
+            tk.Label(self.goal_container,
+                     text="장기 목표를 추가하면 카테고리별로 진행률을 추적할 수 있어요.",
+                     bg=BG, fg=MUTED,
+                     font=("Malgun Gothic", 11)).pack(pady=30)
+            self._update_godlife_summary()
+            return
+        # 2열 카드 그리드
+        col = 0
+        row = 0
+        for g in goals:
+            self._make_goal_card(g, row, col)
+            col += 1
+            if col >= 2:
+                col = 0
+                row += 1
+        for c in range(2):
+            self.goal_container.columnconfigure(c, weight=1)
+        self._update_godlife_summary()
+
+    def _make_goal_card(self, goal, row, col):
+        card = tk.Frame(self.goal_container, bg=CARD_BG, bd=0,
+                        highlightthickness=1, highlightbackground=SOFT)
+        card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+
+        bar = tk.Frame(card, bg=goal["color"], height=5)
+        bar.pack(fill="x")
+        inner = tk.Frame(card, bg=CARD_BG)
+        inner.pack(fill="both", expand=True, padx=14, pady=12)
+
+        top = tk.Frame(inner, bg=CARD_BG)
+        top.pack(fill="x")
+        tk.Label(top, text=goal["title"], bg=CARD_BG, fg=FG,
+                 font=("Malgun Gothic", 12, "bold"),
+                 wraplength=300, justify="left").pack(side="left", anchor="w")
+        if goal["status"] == "completed":
+            tk.Label(top, text="✅ 완료", bg=CARD_BG, fg=ACCENT,
+                     font=("Malgun Gothic", 10, "bold")).pack(side="right")
+
+        meta = tk.Frame(inner, bg=CARD_BG)
+        meta.pack(fill="x", pady=(6, 4))
+        tk.Label(meta, text=f"📂 {goal['category']}", bg=CARD_BG, fg=goal["color"],
+                 font=("Malgun Gothic", 9, "bold")).pack(side="left")
+        if goal["target_date"]:
+            tk.Label(meta, text=f"📅 {goal['target_date']}", bg=CARD_BG,
+                     fg=MUTED, font=("Malgun Gothic", 9)).pack(side="left", padx=10)
+
+        if goal["description"]:
+            tk.Label(inner, text=goal["description"], bg=CARD_BG, fg=MUTED,
+                     font=("Malgun Gothic", 9), wraplength=320,
+                     justify="left").pack(anchor="w", pady=(2, 6))
+
+        # 진행률
+        pr = tk.Frame(inner, bg=CARD_BG)
+        pr.pack(fill="x", pady=(4, 4))
+        tk.Label(pr, text=f"진행률: {goal['progress']}%", bg=CARD_BG, fg=FG,
+                 font=("Malgun Gothic", 10, "bold")).pack(side="left")
+        bar_bg = tk.Frame(inner, bg=SOFT, height=10)
+        bar_bg.pack(fill="x", pady=(2, 8))
+        fill_w = max(1, int(goal["progress"]))
+        fill = tk.Frame(bar_bg, bg=goal["color"], height=10)
+        fill.place(relwidth=fill_w / 100, relheight=1)
+
+        # 진행률 조절 + 삭제
+        btns = tk.Frame(inner, bg=CARD_BG)
+        btns.pack(fill="x")
+        for delta, label in [(-10, "-10"), (-5, "-5"), (+5, "+5"), (+10, "+10"), (100, "완료")]:
+            tk.Button(btns, text=label, bg=SOFT, fg=FG, relief="flat",
+                      font=("Malgun Gothic", 9), padx=8,
+                      command=lambda d=delta, gid=goal["id"], cur=goal["progress"]:
+                      self.adjust_goal(gid, cur, d)).pack(side="left", padx=2)
+        tk.Button(btns, text="삭제", bg=CARD_BG, fg=DANGER, relief="flat",
+                  font=("Malgun Gothic", 9),
+                  command=lambda gid=goal["id"]: self.delete_goal(gid)).pack(side="right")
+
+    def adjust_goal(self, gid, current, delta):
+        if delta == 100:
+            new = 100
+        else:
+            new = current + delta
+        self.db.update_goal_progress(gid, new)
+        self.refresh_goal()
+        self.refresh_dashboard()
+
+    def delete_goal(self, gid):
+        if messagebox.askyesno("삭제 확인", "이 목표를 삭제할까요?"):
+            self.db.delete_goal(gid)
+            self.refresh_goal()
+            self.refresh_dashboard()
+
+    # ---- 오늘 할 일 ----
+    def _build_todo(self):
+        frame = self.sub_todo
+        form = tk.LabelFrame(frame, text="새 할 일 추가", bg=BG, fg=FG,
+                              font=("Malgun Gothic", 10, "bold"),
+                              padx=10, pady=8, bd=1, relief="solid")
+        form.pack(fill="x", padx=14, pady=8)
 
         tk.Label(form, text="날짜", bg=BG).grid(row=0, column=0, padx=4)
-        self.sc_date = tk.Entry(form, width=12)
-        self.sc_date.insert(0, (date.today() + timedelta(days=1)).strftime("%Y-%m-%d"))
-        self.sc_date.grid(row=0, column=1, padx=4)
-
+        self.td_date = tk.Entry(form, width=12)
+        self.td_date.insert(0, date.today().strftime("%Y-%m-%d"))
+        self.td_date.grid(row=0, column=1, padx=4)
         tk.Label(form, text="제목", bg=BG).grid(row=0, column=2, padx=4)
-        self.sc_title = tk.Entry(form, width=30)
-        self.sc_title.grid(row=0, column=3, padx=4)
-
+        self.td_title = tk.Entry(form, width=30)
+        self.td_title.grid(row=0, column=3, padx=4)
         tk.Label(form, text="우선순위", bg=BG).grid(row=0, column=4, padx=4)
-        self.sc_pri = ttk.Combobox(form, values=["high", "normal", "low"],
+        self.td_pri = ttk.Combobox(form, values=["high", "normal", "low"],
                                     width=8, state="readonly")
-        self.sc_pri.set("normal")
-        self.sc_pri.grid(row=0, column=5, padx=4)
-
-        tk.Label(form, text="설명", bg=BG).grid(row=1, column=0, padx=4,
-                                                 pady=(8, 0))
-        self.sc_desc = tk.Entry(form, width=70)
-        self.sc_desc.grid(row=1, column=1, columnspan=4, padx=4,
-                          pady=(8, 0), sticky="we")
-        ttk.Button(form, text="추가", style="Primary.TButton",
-                   command=self.add_schedule).grid(row=1, column=5,
-                                                    padx=4, pady=(8, 0),
-                                                    sticky="we")
+        self.td_pri.set("normal")
+        self.td_pri.grid(row=0, column=5, padx=4)
+        tk.Label(form, text="설명", bg=BG).grid(row=1, column=0, padx=4, pady=(6, 0))
+        self.td_desc = tk.Entry(form, width=60)
+        self.td_desc.grid(row=1, column=1, columnspan=4, padx=4, pady=(6, 0), sticky="we")
+        ttk.Button(form, text="추가", command=self.add_todo).grid(
+            row=1, column=5, padx=4, pady=(6, 0), sticky="we")
 
         list_frame = tk.Frame(frame, bg=BG)
-        list_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        list_frame.pack(fill="both", expand=True, padx=14, pady=8)
         cols = ("id", "done", "date", "priority", "title", "description")
         headers = ("ID", "완료", "날짜", "우선순위", "제목", "설명")
         widths = (40, 60, 100, 90, 220, 400)
-        self.sc_tree = ttk.Treeview(list_frame, columns=cols, show="headings")
+        self.td_tree = ttk.Treeview(list_frame, columns=cols, show="headings")
         for c, h, w in zip(cols, headers, widths):
-            self.sc_tree.heading(c, text=h)
-            self.sc_tree.column(c, width=w, anchor="w")
-        self.sc_tree.pack(side="left", fill="both", expand=True)
+            self.td_tree.heading(c, text=h)
+            self.td_tree.column(c, width=w, anchor="w")
+        self.td_tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(list_frame, orient="vertical",
-                            command=self.sc_tree.yview)
+                            command=self.td_tree.yview)
         sb.pack(side="right", fill="y")
-        self.sc_tree.configure(yscrollcommand=sb.set)
+        self.td_tree.configure(yscrollcommand=sb.set)
 
-        toolbar = tk.Frame(frame, bg=BG)
-        toolbar.pack(fill="x", padx=20, pady=(0, 12))
-        ttk.Button(toolbar, text="완료 체크 토글",
-                   command=self.toggle_schedule).pack(side="left", padx=4)
-        ttk.Button(toolbar, text="선택 삭제",
-                   command=self.delete_schedule).pack(side="right")
+        tb = tk.Frame(frame, bg=BG)
+        tb.pack(fill="x", padx=14, pady=(0, 8))
+        ttk.Button(tb, text="완료 체크 토글",
+                   command=self.toggle_todo).pack(side="left", padx=4)
+        ttk.Button(tb, text="선택 삭제",
+                   command=self.delete_todo).pack(side="right")
 
-    def add_schedule(self):
-        title = self.sc_title.get().strip()
+    def add_todo(self):
+        title = self.td_title.get().strip()
         if not title:
-            messagebox.showwarning("입력 필요", "제목을 입력해주세요.")
             return
-        self.db.add_schedule(
-            self.sc_date.get(), title,
-            self.sc_desc.get(), self.sc_pri.get()
-        )
-        self.sc_title.delete(0, "end")
-        self.sc_desc.delete(0, "end")
-        self.refresh_schedule()
+        self.db.add_schedule(self.td_date.get(), title,
+                              self.td_desc.get(), self.td_pri.get())
+        self.td_title.delete(0, "end")
+        self.td_desc.delete(0, "end")
+        self.refresh_todo()
         self.refresh_dashboard()
 
-    def toggle_schedule(self):
-        sel = self.sc_tree.selection()
+    def toggle_todo(self):
+        sel = self.td_tree.selection()
         if not sel:
             return
-        sid = self.sc_tree.item(sel[0])["values"][0]
-        current = self.sc_tree.item(sel[0])["values"][1] == "✅"
+        sid = self.td_tree.item(sel[0])["values"][0]
+        current = self.td_tree.item(sel[0])["values"][1] == "✅"
         self.db.toggle_schedule(sid, not current)
-        self.refresh_schedule()
+        self.refresh_todo()
         self.refresh_dashboard()
 
-    def delete_schedule(self):
-        sel = self.sc_tree.selection()
+    def delete_todo(self):
+        sel = self.td_tree.selection()
         if not sel:
             return
-        sid = self.sc_tree.item(sel[0])["values"][0]
+        sid = self.td_tree.item(sel[0])["values"][0]
         self.db.delete_schedule(sid)
-        self.refresh_schedule()
+        self.refresh_todo()
         self.refresh_dashboard()
 
-    def refresh_schedule(self):
-        for i in self.sc_tree.get_children():
-            self.sc_tree.delete(i)
+    def refresh_todo(self):
+        for i in self.td_tree.get_children():
+            self.td_tree.delete(i)
         for s in self.db.get_schedules():
-            self.sc_tree.insert("", "end", values=(
+            self.td_tree.insert("", "end", values=(
                 s["id"], "✅" if s["done"] else "⬜",
                 s["date"], s["priority"],
                 s["title"], s["description"] or ""
             ))
 
-    # ========== 공통 ==========
+    # ==================== 뉴스 ====================
+    def _build_news(self):
+        frame = self.tab_news
+        top = tk.Frame(frame, bg=BG)
+        top.pack(fill="x", padx=20, pady=(18, 4))
+        tk.Label(top, text="📰 주식 뉴스 타임라인", bg=BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 16, "bold")).pack(side="left")
+        ttk.Button(top, text="🔄 보유종목 뉴스 업데이트",
+                   command=self.update_news).pack(side="right")
+        self.news_status = tk.Label(frame, text="뉴스를 업데이트하면 보유 종목별 최신 기사가 표시됩니다.",
+                                     bg=BG, fg=MUTED,
+                                     font=("Malgun Gothic", 9))
+        self.news_status.pack(anchor="w", padx=20, pady=(0, 6))
+
+        wrap = tk.Frame(frame, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=20, pady=4)
+        canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.news_container = tk.Frame(canvas, bg=BG)
+        canvas.create_window((0, 0), window=self.news_container, anchor="nw")
+        self.news_container.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+    def update_news(self):
+        self.news_status.config(text="뉴스 가져오는 중...")
+        self.update_idletasks()
+
+        def worker():
+            stocks = self.db.get_stocks()
+            all_items = []
+            for s in stocks:
+                items = fetch_stock_news(s["ticker"], limit=5)
+                # 종목명 보강
+                for it in items:
+                    it["stock_name"] = s["name"] or s["ticker"]
+                all_items.extend(items)
+            # 시간 내림차순 정렬
+            all_items.sort(key=lambda x: x.get("time") or "", reverse=True)
+
+            def done():
+                self._render_news(all_items)
+                self.news_status.config(
+                    text=f"총 {len(all_items)}개 기사 ({datetime.now().strftime('%H:%M')})")
+            self.after(0, done)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _render_news(self, items):
+        for w in self.news_container.winfo_children():
+            w.destroy()
+        if not items:
+            tk.Label(self.news_container,
+                     text="가져온 뉴스가 없습니다. 보유 종목을 먼저 등록하거나, "
+                          "yfinance가 해당 티커의 뉴스를 제공하지 않을 수 있어요.",
+                     bg=BG, fg=MUTED, wraplength=800,
+                     font=("Malgun Gothic", 11)).pack(pady=30)
+            return
+
+        # 날짜별로 그룹
+        groups = {}
+        for it in items:
+            day = (it.get("time") or "")[:10] or "기타"
+            groups.setdefault(day, []).append(it)
+
+        for day in sorted(groups.keys(), reverse=True):
+            day_label = tk.Label(self.news_container, text=f"📅 {day}",
+                                  bg=BG, fg=PRIMARY,
+                                  font=("Malgun Gothic", 12, "bold"))
+            day_label.pack(anchor="w", padx=6, pady=(10, 4))
+            for it in groups[day]:
+                self._make_news_card(it)
+
+    def _make_news_card(self, item):
+        card = tk.Frame(self.news_container, bg=CARD_BG, bd=0,
+                        highlightthickness=1, highlightbackground=SOFT)
+        card.pack(fill="x", padx=20, pady=3)
+        bar = tk.Frame(card, bg=PRIMARY, width=4)
+        bar.pack(side="left", fill="y")
+        inner = tk.Frame(card, bg=CARD_BG)
+        inner.pack(side="left", fill="both", expand=True, padx=12, pady=8)
+
+        title = tk.Label(inner, text=item.get("title", ""), bg=CARD_BG, fg=FG,
+                         font=("Malgun Gothic", 11, "bold"),
+                         wraplength=800, justify="left", cursor="hand2")
+        title.pack(anchor="w")
+        link = item.get("link")
+        if link:
+            title.bind("<Button-1>", lambda _, u=link: webbrowser.open(u))
+
+        meta = tk.Frame(inner, bg=CARD_BG)
+        meta.pack(fill="x", pady=(4, 0))
+        tk.Label(meta, text=f"📈 {item.get('stock_name', item.get('ticker', ''))}",
+                 bg=CARD_BG, fg=ACCENT,
+                 font=("Malgun Gothic", 9, "bold")).pack(side="left")
+        tk.Label(meta, text=f"  ·  {item.get('publisher', '')}", bg=CARD_BG, fg=MUTED,
+                 font=("Malgun Gothic", 9)).pack(side="left")
+        if item.get("time"):
+            tk.Label(meta, text=f"  ·  {item['time']}", bg=CARD_BG, fg=MUTED,
+                     font=("Malgun Gothic", 9)).pack(side="left")
+        if link:
+            tk.Label(meta, text="🔗 열기", bg=CARD_BG, fg=PRIMARY,
+                     font=("Malgun Gothic", 9, "underline"),
+                     cursor="hand2").pack(side="right")
+
+    # ==================== 공통 ====================
     def refresh_all(self):
         self.refresh_ledger()
         self.refresh_deposit()
         self.refresh_stock()
+        self.refresh_trade()
         self.refresh_asset()
-        self.refresh_schedule()
+        self.refresh_habit()
+        self.refresh_goal()
+        self.refresh_todo()
         self.refresh_dashboard()
 
 

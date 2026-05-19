@@ -75,10 +75,6 @@ def maturity_date(start_date_str, period_months):
 def current_deposit_value(deposit_row, as_of=None):
     """
     시작일~오늘 현재까지 실제로 누적된 원금+이자 (세전).
-    반환: {
-        current_value, principal_so_far, interest,
-        elapsed_months, period_months, is_matured, progress_pct
-    }
     """
     as_of = as_of or date.today()
     if isinstance(as_of, datetime):
@@ -91,7 +87,6 @@ def current_deposit_value(deposit_row, as_of=None):
     dtype = deposit_row.get("deposit_type", "예금")
     pay = float(deposit_row["principal"])
 
-    # 시작일 이전이면 0
     if as_of < start:
         if dtype == "적금":
             principal_so_far = 0.0
@@ -109,7 +104,6 @@ def current_deposit_value(deposit_row, as_of=None):
             "progress_pct": 0.0,
         }
 
-    # 경과 개월 (정확한 회차 기준 - 일자도 반영)
     elapsed = (as_of.year - start.year) * 12 + (as_of.month - start.month)
     if as_of.day < start.day:
         elapsed -= 1
@@ -119,10 +113,7 @@ def current_deposit_value(deposit_row, as_of=None):
     eff_months = min(elapsed, period)
 
     if dtype == "적금":
-        # 매월 납입식 — 만기까지 매월 납입했다고 보고, 현재까지 들어간 회차만 합산
-        # 만기 후에는 더 이상 납입 X, 마지막 만기금액 유지 가정
         if is_matured:
-            # 만기 시점의 만기금액 그대로
             total = 0.0
             for k in range(period):
                 months_held = period - k
@@ -131,9 +122,7 @@ def current_deposit_value(deposit_row, as_of=None):
             principal_so_far = pay * period
             current_value = total
         else:
-            # k번째 납입금이 현재까지 (eff_months - k) 개월 동안 운용됨
             total = 0.0
-            # 첫 회차가 시작일에 들어갔다고 가정(=0번 인덱스). 현재 시점에 eff_months 회차가 들어가 있음.
             for k in range(eff_months):
                 months_held = eff_months - k
                 t = months_held / 12.0
@@ -141,7 +130,6 @@ def current_deposit_value(deposit_row, as_of=None):
             principal_so_far = pay * eff_months
             current_value = total
     else:
-        # 예금(거치식) — 원금은 시작일에 일시 예치
         t = eff_months / 12.0
         current_value = pay * ((1 + r / n) ** (n * t))
         principal_so_far = pay
@@ -157,11 +145,68 @@ def current_deposit_value(deposit_row, as_of=None):
     }
 
 
+def insurance_stats(ins_row, as_of=None):
+    """
+    보험 계약의 진행 상황 계산
+    """
+    as_of = as_of or date.today()
+    if isinstance(as_of, datetime):
+        as_of = as_of.date()
+    start = datetime.strptime(ins_row["start_date"], "%Y-%m-%d").date()
+    monthly = float(ins_row.get("monthly_premium") or 0)
+
+    def months_between(a, b):
+        m = (b.year - a.year) * 12 + (b.month - a.month)
+        if b.day < a.day:
+            m -= 1
+        return max(0, m)
+
+    if as_of < start:
+        months_paid = 0
+    else:
+        months_paid = months_between(start, as_of)
+
+    pay_end_str = ins_row.get("payment_end_date")
+    if pay_end_str:
+        pay_end = datetime.strptime(pay_end_str, "%Y-%m-%d").date()
+        max_months = months_between(start, pay_end)
+        months_paid = min(months_paid, max_months)
+        payment_progress = (months_paid / max_months * 100) if max_months else 0
+        payment_done = months_paid >= max_months
+        payment_months_left = max(0, max_months - months_paid)
+    else:
+        payment_progress = None
+        payment_done = False
+        payment_months_left = None
+
+    total_paid = months_paid * monthly
+
+    maturity_str = ins_row.get("maturity_date")
+    if maturity_str:
+        maturity = datetime.strptime(maturity_str, "%Y-%m-%d").date()
+        days_to_maturity = (maturity - as_of).days
+        months_to_maturity = months_between(as_of, maturity) if maturity > as_of else 0
+        is_expired = as_of > maturity
+    else:
+        days_to_maturity = None
+        months_to_maturity = None
+        is_expired = False
+
+    return {
+        "months_paid": months_paid,
+        "total_paid": total_paid,
+        "months_to_maturity": months_to_maturity,
+        "days_to_maturity": days_to_maturity,
+        "payment_progress": payment_progress,
+        "payment_done": payment_done,
+        "payment_months_left": payment_months_left,
+        "is_expired": is_expired,
+    }
+
+
 def fetch_stock_quote(ticker):
     """
     개선된 주가 조회: 여러 경로를 시도하고 출처/통화까지 함께 반환.
-    반환: {'price': float, 'currency': str, 'source': str, 'name': str|None}
-          실패 시 None
     """
     try:
         import yfinance as yf
@@ -172,7 +217,7 @@ def fetch_stock_quote(ticker):
     try:
         t = yf.Ticker(ticker)
 
-        # 1) fast_info (가장 빠르고 신뢰성 있음)
+        # 1) fast_info
         try:
             fi = t.fast_info
             price = None
@@ -253,18 +298,36 @@ def _guess_currency(ticker):
 
 
 def fetch_stock_news(ticker, limit=10):
-    """
-    yfinance Ticker.news로 종목 관련 뉴스 가져오기.
-    반환: 리스트[{'title','publisher','link','time','ticker'}]
-    """
+    """yfinance Ticker.news로 종목 관련 뉴스 가져오기"""
     try:
         import yfinance as yf
         t = yf.Ticker(ticker)
         items = t.news or []
         result = []
         for it in items[:limit]:
-            # yfinance 신규 포맷은 'content' 안에 내용이 있고, 구형은 평탄
             content = it.get("content") or it
+            title = content.get("title")
+            if not title:
+                continue
+            pub = (content.get("provider") or {}).get("displayName") or content.get(
+                "publisher", "")
+            link = (content.get("canonicalUrl") or {}).get("url") or content.get(
+                "link", "")
+            ts = content.get("pubDate") or content.get("providerPublishTime")
+            if isinstance(ts, (int, float)):
+                ts = datetime.fromtimestamp(ts).isoformat(timespec="minutes")
+            result.append({
+                "title": title,
+                "publisher": pub,
+                "link": link,
+                "time": ts or "",
+                "ticker": ticker,
+            })
+        return result
+    except Exception as e:
+        print(f"[fetch_stock_news] {ticker} 실패: {e}")
+        return []
+ or it
             title = content.get("title")
             if not title:
                 continue

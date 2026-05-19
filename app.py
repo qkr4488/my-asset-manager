@@ -13,7 +13,7 @@ from database import Database
 from finance import (
     compound_deposit, compound_savings, calculate_deposit,
     maturity_date, fetch_stock_quote, fetch_stock_news,
-    current_deposit_value,
+    current_deposit_value, insurance_stats,
 )
 
 # ==================== 색상/테마 ====================
@@ -133,15 +133,17 @@ class AssetManagerApp(tk.Tk):
         self.tab_stock = ttk.Frame(self.nb)
         self.tab_trade = ttk.Frame(self.nb)
         self.tab_asset = ttk.Frame(self.nb)
+        self.tab_insurance = ttk.Frame(self.nb)
         self.tab_godlife = ttk.Frame(self.nb)
         self.tab_news = ttk.Frame(self.nb)
 
         self.nb.add(self.tab_dashboard, text="📊 대시보드")
         self.nb.add(self.tab_ledger, text="💳 가계부")
         self.nb.add(self.tab_deposit, text="🏦 적금/예금")
-        self.nb.add(self.tab_stock, text="📈 주식")
+        self.nb.add(self.tab_stock, text="📈 주식/ETF")
         self.nb.add(self.tab_trade, text="💱 매매손익")
         self.nb.add(self.tab_asset, text="🏠 기타 자산")
+        self.nb.add(self.tab_insurance, text="🛡 보험")
         self.nb.add(self.tab_godlife, text="✨ 갓생살기")
         self.nb.add(self.tab_news, text="📰 뉴스")
 
@@ -151,6 +153,7 @@ class AssetManagerApp(tk.Tk):
         self._build_stock()
         self._build_trade()
         self._build_asset()
+        self._build_insurance()
         self._build_godlife()
         self._build_news()
 
@@ -345,29 +348,96 @@ class AssetManagerApp(tk.Tk):
         tk.Label(form, text="금액", bg=BG).grid(row=0, column=6, sticky="w", padx=4)
         self.tx_amount = tk.Entry(form, width=12)
         self.tx_amount.grid(row=0, column=7, padx=4)
-        tk.Label(form, text="메모", bg=BG).grid(row=1, column=0, sticky="w",
-                                                padx=4, pady=(8, 0))
+
+        # 결제수단 + 할부
+        tk.Label(form, text="결제수단", bg=BG).grid(
+            row=1, column=0, sticky="w", padx=4, pady=(8, 0))
+        self.tx_method = ttk.Combobox(
+            form, values=["현금", "체크카드", "신용카드", "계좌이체",
+                          "간편결제", "기타"],
+            width=10, state="readonly")
+        self.tx_method.set("현금")
+        self.tx_method.grid(row=1, column=1, padx=4, pady=(8, 0), sticky="w")
+        self.tx_method.bind("<<ComboboxSelected>>", self._on_method_change)
+
+        tk.Label(form, text="할부", bg=BG).grid(
+            row=1, column=2, sticky="w", padx=4, pady=(8, 0))
+        self.tx_install = ttk.Combobox(
+            form,
+            values=["일시불", "2개월", "3개월", "4개월", "5개월", "6개월",
+                    "7개월", "8개월", "9개월", "10개월", "12개월",
+                    "18개월", "24개월", "36개월"],
+            width=8, state="disabled")
+        self.tx_install.set("일시불")
+        self.tx_install.grid(row=1, column=3, padx=4, pady=(8, 0), sticky="w")
+
+        tk.Label(form, text="메모", bg=BG).grid(
+            row=2, column=0, sticky="w", padx=4, pady=(8, 0))
         self.tx_memo = tk.Entry(form, width=60)
-        self.tx_memo.grid(row=1, column=1, columnspan=5, padx=4,
+        self.tx_memo.grid(row=2, column=1, columnspan=5, padx=4,
                           pady=(8, 0), sticky="we")
         ttk.Button(form, text="추가", command=self.add_transaction).grid(
-            row=1, column=6, columnspan=2, padx=4, pady=(8, 0), sticky="we")
+            row=2, column=6, columnspan=2, padx=4, pady=(8, 0), sticky="we")
+
+        # 기간 필터
+        filt = tk.LabelFrame(frame, text="📅 기간 필터", bg=BG, fg=FG,
+                              font=("Malgun Gothic", 10, "bold"),
+                              padx=10, pady=8, bd=1, relief="solid")
+        filt.pack(fill="x", padx=20, pady=(8, 4))
+
+        self.tx_period = tk.StringVar(value="이번 달")
+        for label in ("이번 주", "이번 달", "지난 달", "3개월", "올해",
+                      "전체", "사용자 지정"):
+            tk.Radiobutton(
+                filt, text=label, variable=self.tx_period, value=label,
+                bg=BG, fg=FG, font=("Malgun Gothic", 9),
+                selectcolor=CARD_BG, activebackground=SOFT,
+                command=self.refresh_ledger
+            ).pack(side="left", padx=4)
+
+        custom_frame = tk.Frame(filt, bg=BG)
+        custom_frame.pack(side="left", padx=(14, 0))
+        tk.Label(custom_frame, text="시작:", bg=BG,
+                 font=("Malgun Gothic", 9)).pack(side="left")
+        self.tx_from = tk.Entry(custom_frame, width=11,
+                                 font=("Malgun Gothic", 9))
+        self.tx_from.insert(0, date.today().replace(day=1).strftime("%Y-%m-%d"))
+        self.tx_from.pack(side="left", padx=2)
+        tk.Label(custom_frame, text="~ 종료:", bg=BG,
+                 font=("Malgun Gothic", 9)).pack(side="left")
+        self.tx_to = tk.Entry(custom_frame, width=11,
+                               font=("Malgun Gothic", 9))
+        self.tx_to.insert(0, date.today().strftime("%Y-%m-%d"))
+        self.tx_to.pack(side="left", padx=2)
+        ttk.Button(custom_frame, text="적용", width=6,
+                   command=lambda: (self.tx_period.set("사용자 지정"),
+                                    self.refresh_ledger())
+                   ).pack(side="left", padx=4)
+
+        # 기간 요약
+        self.tx_summary = tk.Label(frame, text="", bg=CARD_BG, fg=FG,
+                                    font=("Malgun Gothic", 11, "bold"),
+                                    pady=12, padx=16, anchor="w")
+        self.tx_summary.pack(fill="x", padx=20, pady=(0, 4))
 
         list_frame = tk.Frame(frame, bg=BG)
-        list_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        list_frame.pack(fill="both", expand=True, padx=20, pady=4)
         cols = ("id", "date", "type", "category", "amount", "memo")
+        headers = ("ID", "날짜", "구분", "카테고리", "금액", "메모")
         self.tx_tree = ttk.Treeview(list_frame, columns=cols, show="headings")
         widths = (50, 100, 80, 100, 120, 400)
-        for c, w in zip(cols, widths):
-            self.tx_tree.heading(c, text=c.upper())
+        for c, h, w in zip(cols, headers, widths):
+            self.tx_tree.heading(c, text=h)
             self.tx_tree.column(c, width=w, anchor="w")
+        self.tx_tree.tag_configure("inc", foreground=ACCENT)
+        self.tx_tree.tag_configure("exp", foreground=DANGER)
         self.tx_tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(list_frame, orient="vertical",
                             command=self.tx_tree.yview)
         sb.pack(side="right", fill="y")
         self.tx_tree.configure(yscrollcommand=sb.set)
         ttk.Button(frame, text="선택 삭제", command=self.delete_transaction).pack(
-            anchor="e", padx=20, pady=(0, 12))
+            anchor="e", padx=20, pady=(4, 12))
 
     def add_transaction(self):
         try:
@@ -392,14 +462,77 @@ class AssetManagerApp(tk.Tk):
         self.refresh_ledger()
         self.refresh_dashboard()
 
+    def _resolve_ledger_period(self):
+        """선택된 기간 필터를 (start_str, end_str, label) 로 변환"""
+        today = date.today()
+        period = self.tx_period.get() if hasattr(self, "tx_period") else "이번 달"
+
+        if period == "이번 주":
+            # 월요일 시작
+            start = today - timedelta(days=today.weekday())
+            end = start + timedelta(days=6)
+        elif period == "이번 달":
+            start = today.replace(day=1)
+            # 다음 달 1일 - 1일
+            if today.month == 12:
+                end = date(today.year, 12, 31)
+            else:
+                end = date(today.year, today.month + 1, 1) - timedelta(days=1)
+        elif period == "지난 달":
+            first_this = today.replace(day=1)
+            end = first_this - timedelta(days=1)
+            start = end.replace(day=1)
+        elif period == "3개월":
+            # 오늘 포함 최근 90일
+            start = today - timedelta(days=89)
+            end = today
+        elif period == "올해":
+            start = date(today.year, 1, 1)
+            end = date(today.year, 12, 31)
+        elif period == "사용자 지정":
+            try:
+                start = datetime.strptime(self.tx_from.get(), "%Y-%m-%d").date()
+                end = datetime.strptime(self.tx_to.get(), "%Y-%m-%d").date()
+            except Exception:
+                start = today.replace(day=1)
+                end = today
+        else:  # 전체
+            return None, None, "전체 기간"
+        return (start.strftime("%Y-%m-%d"),
+                end.strftime("%Y-%m-%d"),
+                f"{period}  ({start.strftime('%Y-%m-%d')} ~ {end.strftime('%Y-%m-%d')})")
+
     def refresh_ledger(self):
         for i in self.tx_tree.get_children():
             self.tx_tree.delete(i)
-        for r in self.db.get_transactions():
-            self.tx_tree.insert("", "end", values=(
-                r["id"], r["date"], r["type"], r["category"],
-                won(r["amount"]), r["memo"] or ""
+        start_str, end_str, label = self._resolve_ledger_period()
+        txs = self.db.get_transactions(start_date=start_str, end_date=end_str)
+
+        total_income = 0
+        total_expense = 0
+        for r in txs:
+            tag = "inc" if r["type"] == "income" else "exp"
+            kind = "수입" if r["type"] == "income" else "지출"
+            sign = "+" if r["type"] == "income" else "-"
+            if r["type"] == "income":
+                total_income += r["amount"]
+            else:
+                total_expense += r["amount"]
+            self.tx_tree.insert("", "end", tags=(tag,), values=(
+                r["id"], r["date"], kind, r["category"],
+                f"{sign}{won(r['amount'])}", r["memo"] or ""
             ))
+
+        balance = total_income - total_expense
+        bal_color = ACCENT if balance >= 0 else DANGER
+        sign = "+" if balance >= 0 else ""
+        self.tx_summary.config(
+            text=f"📅 {label}    "
+                 f"💰 수입 {won(total_income)}    "
+                 f"💸 지출 {won(total_expense)}    "
+                 f"📊 잔액 {sign}{won(balance)}    "
+                 f"📝 {len(txs)}건",
+            fg=bal_color)
 
     # ==================== 적금/예금 ====================
     def _build_deposit(self):
@@ -551,13 +684,19 @@ class AssetManagerApp(tk.Tk):
                 elapsed_disp, won(cur["current_value"]), won(calc["total"])
             ))
 
-    # ==================== 주식 (개선) ====================
+    # ==================== 주식/ETF (개선) ====================
     def _build_stock(self):
         frame = self.tab_stock
-        ttk.Label(frame, text="주식 포트폴리오",
-                  style="Header.TLabel").pack(anchor="w", padx=20, pady=(18, 4))
-        tk.Label(frame, text="💡 한국 주식: 005930.KS (코스피), .KQ (코스닥) | 미국: AAPL, TSLA. "
-                            "가격이 이상하면 종목 클릭 후 '수동 가격 사용'을 켜세요.",
+        top = tk.Frame(frame, bg=BG)
+        top.pack(fill="x", padx=20, pady=(18, 4))
+        ttk.Label(top, text="주식 / ETF 포트폴리오",
+                  style="Header.TLabel").pack(side="left")
+        ttk.Button(top, text="❓ 티커 예시",
+                   command=self.show_ticker_examples).pack(side="right")
+        tk.Label(frame, text="💡 주식과 ETF 모두 동일 방식으로 등록 가능. "
+                            "한국: 005930.KS / 069500.KS (KODEX 200) | "
+                            "미국: AAPL, SPY, QQQ. "
+                            "가격이 이상하면 종목 선택 후 '수동 모드 토글'.",
                  bg=BG, fg=MUTED, font=("Malgun Gothic", 9)).pack(
             anchor="w", padx=20)
 
@@ -624,6 +763,75 @@ class AssetManagerApp(tk.Tk):
         self.st_summary = tk.Label(frame, text="", bg=BG, fg=FG,
                                     font=("Malgun Gothic", 11, "bold"))
         self.st_summary.pack(anchor="e", padx=20, pady=(0, 12))
+
+    def show_ticker_examples(self):
+        """자주 쓰는 한국/미국 주식·ETF 티커 안내 창"""
+        dlg = tk.Toplevel(self)
+        dlg.title("티커 예시 (주식 / ETF)")
+        dlg.geometry("560x520")
+        dlg.configure(bg=BG)
+
+        head = tk.Label(dlg, text="자주 쓰는 티커 예시", bg=BG, fg=PRIMARY,
+                        font=("Malgun Gothic", 13, "bold"))
+        head.pack(anchor="w", padx=16, pady=(14, 4))
+        tk.Label(dlg, text="아래 티커를 그대로 복사해서 '티커'란에 입력하세요.",
+                 bg=BG, fg=MUTED, font=("Malgun Gothic", 9)).pack(
+            anchor="w", padx=16, pady=(0, 8))
+
+        text = tk.Text(dlg, font=("Malgun Gothic", 10), bg=CARD_BG, fg=FG,
+                       padx=14, pady=10, relief="flat", height=22)
+        text.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+
+        content = [
+            ("h", "🇰🇷 한국 주식 (코스피 .KS / 코스닥 .KQ)"),
+            ("t", "  005930.KS   삼성전자"),
+            ("t", "  000660.KS   SK하이닉스"),
+            ("t", "  035420.KS   NAVER"),
+            ("t", "  035720.KS   카카오"),
+            ("t", "  005380.KS   현대차"),
+            ("t", "  051910.KS   LG화학"),
+            ("t", "  247540.KQ   에코프로비엠"),
+            ("t", "  086520.KQ   에코프로"),
+            ("h", "\n🇰🇷 한국 ETF (KODEX, TIGER, ACE 등)"),
+            ("t", "  069500.KS   KODEX 200"),
+            ("t", "  102110.KS   TIGER 200"),
+            ("t", "  360750.KS   TIGER 미국S&P500"),
+            ("t", "  133690.KS   TIGER 미국나스닥100"),
+            ("t", "  381180.KS   TIGER 미국필라델피아반도체나스닥"),
+            ("t", "  371460.KS   TIGER 차이나전기차SOLACTIVE"),
+            ("t", "  229200.KS   KODEX 코스닥150"),
+            ("t", "  114800.KS   KODEX 인버스"),
+            ("t", "  252670.KS   KODEX 200선물인버스2X"),
+            ("t", "  411060.KS   ACE 미국30년국채액티브(H)"),
+            ("h", "\n🇺🇸 미국 주식 (접미사 없음)"),
+            ("t", "  AAPL   Apple"),
+            ("t", "  MSFT   Microsoft"),
+            ("t", "  NVDA   NVIDIA"),
+            ("t", "  TSLA   Tesla"),
+            ("t", "  GOOGL  Alphabet"),
+            ("t", "  AMZN   Amazon"),
+            ("h", "\n🇺🇸 미국 ETF"),
+            ("t", "  SPY    SPDR S&P 500"),
+            ("t", "  VOO    Vanguard S&P 500"),
+            ("t", "  QQQ    Invesco NASDAQ 100"),
+            ("t", "  VTI    Vanguard Total Stock Market"),
+            ("t", "  SCHD   Schwab US Dividend"),
+            ("t", "  SOXX   iShares Semiconductor"),
+            ("t", "  TLT    iShares 20+ Year Treasury"),
+            ("h", "\n💡 통화 자동 추정"),
+            ("t", "  .KS / .KQ → KRW (원화)"),
+            ("t", "  접미사 없음 → USD (달러)"),
+            ("t", "  .T → JPY, .HK → HKD, .L → GBP"),
+        ]
+        text.tag_config("h", font=("Malgun Gothic", 11, "bold"),
+                        foreground=PRIMARY)
+        text.tag_config("t", font=("Malgun Gothic", 10))
+        for tag, line in content:
+            text.insert("end", line + "\n", tag)
+        text.configure(state="disabled")
+
+        ttk.Button(dlg, text="닫기",
+                   command=dlg.destroy).pack(pady=(0, 12))
 
     def add_stock(self):
         try:
@@ -1031,6 +1239,214 @@ class AssetManagerApp(tk.Tk):
                 won(a["value"]), a["memo"] or "",
                 a["updated_at"] or "-"
             ))
+
+    # ==================== 보험 ====================
+    def _build_insurance(self):
+        frame = self.tab_insurance
+        top = tk.Frame(frame, bg=BG)
+        top.pack(fill="x", padx=20, pady=(18, 4))
+        ttk.Label(top, text="🛡 보험 관리",
+                  style="Header.TLabel").pack(side="left")
+        ttk.Button(top, text="🔗 내보험찾기 (공식 통합조회)",
+                   command=lambda: webbrowser.open("https://cont.insure.or.kr/")
+                   ).pack(side="right")
+        tk.Label(frame, text="💡 개인 앱이 보험사 DB에 접근할 수는 없어요. "
+                            "내보험찾기에서 한 번 조회한 뒤 아래에 등록해 두면 "
+                            "총 납입금/만기 D-day/진행률이 자동 계산됩니다.",
+                 bg=BG, fg=MUTED, font=("Malgun Gothic", 9),
+                 wraplength=1000, justify="left").pack(
+            anchor="w", padx=20, pady=(0, 4))
+
+        # 상단 요약 카드
+        cards = tk.Frame(frame, bg=BG)
+        cards.pack(fill="x", padx=20, pady=6)
+        self.ins_card_month = self._make_card(cards, "월 보험료 합계", "0원", "#9b59b6")
+        self.ins_card_month.grid(row=0, column=0, padx=6, pady=4, sticky="ew")
+        self.ins_card_total = self._make_card(cards, "총 누적 납입", "0원", "#4a90e2")
+        self.ins_card_total.grid(row=0, column=1, padx=6, pady=4, sticky="ew")
+        self.ins_card_count = self._make_card(cards, "보유 계약 수", "0건", ACCENT)
+        self.ins_card_count.grid(row=0, column=2, padx=6, pady=4, sticky="ew")
+        self.ins_card_alert = self._make_card(cards, "30일 내 만기", "0건", DANGER)
+        self.ins_card_alert.grid(row=0, column=3, padx=6, pady=4, sticky="ew")
+        for c in range(4):
+            cards.columnconfigure(c, weight=1)
+
+        # 입력 폼
+        form = tk.LabelFrame(frame, text="새 보험 등록", bg=BG, fg=FG,
+                              font=("Malgun Gothic", 10, "bold"),
+                              padx=10, pady=8, bd=1, relief="solid")
+        form.pack(fill="x", padx=20, pady=6)
+
+        r1 = tk.Frame(form, bg=BG)
+        r1.pack(fill="x", pady=2)
+        tk.Label(r1, text="보험사", bg=BG).pack(side="left", padx=4)
+        self.ins_company = tk.Entry(r1, width=14)
+        self.ins_company.pack(side="left", padx=4)
+        tk.Label(r1, text="상품명", bg=BG).pack(side="left", padx=4)
+        self.ins_name = tk.Entry(r1, width=22)
+        self.ins_name.pack(side="left", padx=4)
+        tk.Label(r1, text="종류", bg=BG).pack(side="left", padx=4)
+        self.ins_cat = ttk.Combobox(r1, values=[
+            "실손", "암", "종신", "정기", "건강", "치아",
+            "운전자", "자동차", "화재", "여행자", "연금", "변액", "기타"
+        ], width=10, state="readonly")
+        self.ins_cat.set("실손")
+        self.ins_cat.pack(side="left", padx=4)
+        tk.Label(r1, text="피보험자", bg=BG).pack(side="left", padx=4)
+        self.ins_person = tk.Entry(r1, width=10)
+        self.ins_person.pack(side="left", padx=4)
+        tk.Label(r1, text="월 보험료", bg=BG).pack(side="left", padx=4)
+        self.ins_premium = tk.Entry(r1, width=12)
+        self.ins_premium.pack(side="left", padx=4)
+
+        r2 = tk.Frame(form, bg=BG)
+        r2.pack(fill="x", pady=4)
+        tk.Label(r2, text="가입일", bg=BG).pack(side="left", padx=4)
+        self.ins_start = tk.Entry(r2, width=12)
+        self.ins_start.insert(0, date.today().strftime("%Y-%m-%d"))
+        self.ins_start.pack(side="left", padx=4)
+        tk.Label(r2, text="만기일 (없으면 비움)", bg=BG).pack(side="left", padx=4)
+        self.ins_maturity = tk.Entry(r2, width=12)
+        self.ins_maturity.pack(side="left", padx=4)
+        tk.Label(r2, text="납입종료일", bg=BG).pack(side="left", padx=4)
+        self.ins_pay_end = tk.Entry(r2, width=12)
+        self.ins_pay_end.pack(side="left", padx=4)
+        tk.Label(r2, text="보장/메모", bg=BG).pack(side="left", padx=4)
+        self.ins_coverage = tk.Entry(r2, width=24)
+        self.ins_coverage.pack(side="left", padx=4)
+        ttk.Button(r2, text="추가", command=self.add_insurance).pack(
+            side="left", padx=8)
+
+        # 알림 영역
+        self.ins_alert = tk.Label(frame, text="", bg=BG, fg=DANGER,
+                                   font=("Malgun Gothic", 10, "bold"))
+        self.ins_alert.pack(anchor="w", padx=20, pady=(4, 0))
+
+        # 목록
+        list_frame = tk.Frame(frame, bg=BG)
+        list_frame.pack(fill="both", expand=True, padx=20, pady=8)
+        cols = ("id", "company", "name", "category", "person",
+                "premium", "start", "maturity", "dday",
+                "paid_months", "total_paid", "pay_status")
+        headers = ("ID", "보험사", "상품명", "종류", "피보험자",
+                   "월보험료", "가입일", "만기일", "D-day",
+                   "납입(월)", "총납입", "납입상태")
+        widths = (40, 90, 140, 70, 70, 90, 95, 95, 80, 80, 110, 100)
+        self.ins_tree = ttk.Treeview(list_frame, columns=cols, show="headings")
+        for c, h, w in zip(cols, headers, widths):
+            self.ins_tree.heading(c, text=h)
+            self.ins_tree.column(c, width=w, anchor="w")
+        self.ins_tree.tag_configure("expiring", background="#fff3cd")
+        self.ins_tree.tag_configure("expired", foreground=MUTED)
+        self.ins_tree.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(list_frame, orient="vertical",
+                            command=self.ins_tree.yview)
+        sb.pack(side="right", fill="y")
+        self.ins_tree.configure(yscrollcommand=sb.set)
+        ttk.Button(frame, text="선택 삭제",
+                   command=self.delete_insurance).pack(anchor="e",
+                                                         padx=20, pady=(0, 12))
+
+    def add_insurance(self):
+        try:
+            company = self.ins_company.get().strip()
+            name = self.ins_name.get().strip()
+            if not company or not name:
+                messagebox.showwarning("입력 필요", "보험사와 상품명을 입력해주세요.")
+                return
+            premium = float((self.ins_premium.get() or "0").replace(",", ""))
+            self.db.add_insurance(
+                company=company, name=name, category=self.ins_cat.get(),
+                insured_person=self.ins_person.get().strip(),
+                monthly_premium=premium,
+                start_date=self.ins_start.get(),
+                maturity_date=self.ins_maturity.get().strip() or None,
+                payment_end_date=self.ins_pay_end.get().strip() or None,
+                coverage=self.ins_coverage.get(),
+            )
+            for e in (self.ins_company, self.ins_name, self.ins_person,
+                       self.ins_premium, self.ins_maturity,
+                       self.ins_pay_end, self.ins_coverage):
+                e.delete(0, "end")
+            self.refresh_insurance()
+            self.refresh_dashboard()
+        except Exception as e:
+            messagebox.showerror("입력 오류", f"입력을 확인해주세요.\n{e}")
+
+    def delete_insurance(self):
+        sel = self.ins_tree.selection()
+        if not sel:
+            return
+        iid = self.ins_tree.item(sel[0])["values"][0]
+        if messagebox.askyesno("삭제 확인", "이 보험 계약을 삭제할까요?"):
+            self.db.delete_insurance(iid)
+            self.refresh_insurance()
+            self.refresh_dashboard()
+
+    def refresh_insurance(self):
+        for i in self.ins_tree.get_children():
+            self.ins_tree.delete(i)
+        insurances = self.db.get_insurances()
+        total_monthly = 0
+        total_paid = 0
+        expiring_soon = []
+        for ins in insurances:
+            stats = insurance_stats(ins)
+            total_monthly += ins["monthly_premium"] or 0
+            total_paid += stats["total_paid"]
+
+            # 만기 D-day
+            if stats["days_to_maturity"] is None:
+                dday = "종신"
+            elif stats["is_expired"]:
+                dday = "만료"
+            elif stats["days_to_maturity"] == 0:
+                dday = "오늘"
+            elif stats["days_to_maturity"] > 0:
+                dday = f"D-{stats['days_to_maturity']}"
+            else:
+                dday = f"D+{-stats['days_to_maturity']}"
+
+            # 납입 상태
+            if stats["payment_progress"] is None:
+                pay_status = "납입중"
+            elif stats["payment_done"]:
+                pay_status = "✅ 완료"
+            else:
+                pay_status = f"{stats['payment_progress']:.0f}% (남{stats['payment_months_left']}월)"
+
+            tag = ()
+            if stats["is_expired"]:
+                tag = ("expired",)
+            elif (stats["days_to_maturity"] is not None
+                  and 0 <= stats["days_to_maturity"] <= 30):
+                tag = ("expiring",)
+                expiring_soon.append(f"{ins['name']} ({dday})")
+
+            self.ins_tree.insert("", "end", tags=tag, values=(
+                ins["id"], ins["company"], ins["name"], ins["category"],
+                ins["insured_person"] or "-",
+                won(ins["monthly_premium"] or 0),
+                ins["start_date"],
+                ins["maturity_date"] or "종신/평생",
+                dday,
+                stats["months_paid"],
+                won(stats["total_paid"]),
+                pay_status,
+            ))
+
+        # 카드 갱신
+        self.ins_card_month.value_label.config(text=won(total_monthly))
+        self.ins_card_total.value_label.config(text=won(total_paid))
+        self.ins_card_count.value_label.config(text=f"{len(insurances)}건")
+        self.ins_card_alert.value_label.config(text=f"{len(expiring_soon)}건")
+
+        # 알림 라벨
+        if expiring_soon:
+            self.ins_alert.config(
+                text=f"⚠️ 만기 임박: {', '.join(expiring_soon[:5])}")
+        else:
+            self.ins_alert.config(text="")
 
     # ==================== 갓생살기 ====================
     def _build_godlife(self):
@@ -1581,6 +1997,7 @@ class AssetManagerApp(tk.Tk):
         self.refresh_stock()
         self.refresh_trade()
         self.refresh_asset()
+        self.refresh_insurance()
         self.refresh_habit()
         self.refresh_goal()
         self.refresh_todo()
@@ -1589,5 +2006,4 @@ class AssetManagerApp(tk.Tk):
 
 if __name__ == "__main__":
     app = AssetManagerApp()
-    app.mainloop()
     app.mainloop()

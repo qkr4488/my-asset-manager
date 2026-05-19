@@ -13,6 +13,7 @@ from database import Database
 from finance import (
     compound_deposit, compound_savings, calculate_deposit,
     maturity_date, fetch_stock_quote, fetch_stock_news,
+    current_deposit_value,
 )
 
 # ==================== 색상/테마 ====================
@@ -170,7 +171,7 @@ class AssetManagerApp(tk.Tk):
         self.card_total.grid(row=0, column=0, padx=6, pady=6, sticky="ew")
         self.card_cash = self._make_card(cards, "현금/기타", "0원", "#4a90e2")
         self.card_cash.grid(row=0, column=1, padx=6, pady=6, sticky="ew")
-        self.card_deposit = self._make_card(cards, "적금/예금 (만기가치)", "0원", ACCENT)
+        self.card_deposit = self._make_card(cards, "적금/예금 (현재가치)", "0원", ACCENT)
         self.card_deposit.grid(row=0, column=2, padx=6, pady=6, sticky="ew")
         self.card_stock = self._make_card(cards, "주식 평가액", "0원", "#e67e22")
         self.card_stock.grid(row=0, column=3, padx=6, pady=6, sticky="ew")
@@ -239,7 +240,9 @@ class AssetManagerApp(tk.Tk):
         cash_total = sum(a["value"] for a in assets)
 
         deposits = self.db.get_deposits()
-        deposit_total = sum(calculate_deposit(d)["total"] for d in deposits)
+        # 현재 진행 시점까지 누적된 가치 (세전)
+        deposit_total = sum(current_deposit_value(d)["current_value"]
+                            for d in deposits)
 
         stocks = self.db.get_stocks()
         stock_value = 0
@@ -460,13 +463,14 @@ class AssetManagerApp(tk.Tk):
         list_frame = tk.Frame(frame, bg=BG)
         list_frame.pack(fill="both", expand=True, padx=20, pady=10)
         cols = ("id", "name", "type", "principal", "rate", "period",
-                "start", "maturity", "total", "interest")
+                "start", "maturity", "elapsed", "current", "maturity_total")
         headers = ("ID", "상품명", "종류", "원금/월납", "이율", "기간(월)",
-                   "시작일", "만기일", "만기금액(세후)", "세후이자")
+                   "시작일", "만기일", "경과(개월)", "현재가치", "만기금액(세후)")
+        widths = (40, 130, 60, 90, 60, 70, 100, 100, 80, 110, 120)
         self.dp_tree = ttk.Treeview(list_frame, columns=cols, show="headings")
-        for c, h in zip(cols, headers):
+        for c, h, w in zip(cols, headers, widths):
             self.dp_tree.heading(c, text=h)
-            self.dp_tree.column(c, width=100, anchor="w")
+            self.dp_tree.column(c, width=w, anchor="w")
         self.dp_tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(list_frame, orient="vertical",
                             command=self.dp_tree.yview)
@@ -536,12 +540,15 @@ class AssetManagerApp(tk.Tk):
             self.dp_tree.delete(i)
         for d in self.db.get_deposits():
             calc = calculate_deposit(d)
+            cur = current_deposit_value(d)
             mdate = maturity_date(d["start_date"], d["period_months"])
+            elapsed_disp = (f"{cur['elapsed_months']}/{cur['period_months']}"
+                            + (" ✅" if cur["is_matured"] else ""))
             self.dp_tree.insert("", "end", values=(
                 d["id"], d["name"], d["deposit_type"],
                 won(d["principal"]), f"{d['interest_rate']}%",
                 d["period_months"], d["start_date"], mdate,
-                won(calc["total"]), won(calc["interest_net"])
+                elapsed_disp, won(cur["current_value"]), won(calc["total"])
             ))
 
     # ==================== 주식 (개선) ====================
@@ -1582,4 +1589,5 @@ class AssetManagerApp(tk.Tk):
 
 if __name__ == "__main__":
     app = AssetManagerApp()
+    app.mainloop()
     app.mainloop()

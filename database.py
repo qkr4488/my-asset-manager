@@ -37,6 +37,10 @@ class Database:
                 category TEXT NOT NULL,
                 amount REAL NOT NULL,
                 memo TEXT,
+                payment_method TEXT DEFAULT '현금',
+                installment_months INTEGER DEFAULT 1,
+                installment_index INTEGER DEFAULT 1,
+                installment_group_id TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -154,6 +158,24 @@ class Database:
             )
         """)
 
+        # ===== 신규: 보험 =====
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS insurances (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company TEXT NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT DEFAULT '기타',
+                insured_person TEXT,
+                monthly_premium REAL DEFAULT 0,
+                start_date TEXT NOT NULL,
+                maturity_date TEXT,
+                payment_end_date TEXT,
+                coverage TEXT,
+                memo TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         conn.commit()
         conn.close()
 
@@ -161,25 +183,86 @@ class Database:
         """기존 DB에 새 컬럼이 없으면 추가합니다."""
         conn = self.get_connection()
         try:
-            # stocks 테이블에 신규 컬럼 추가 (기존 DB 호환)
+            # stocks
             cols = [r[1] for r in conn.execute("PRAGMA table_info(stocks)").fetchall()]
             if "price_source" not in cols:
                 conn.execute("ALTER TABLE stocks ADD COLUMN price_source TEXT DEFAULT 'manual'")
             if "use_manual" not in cols:
                 conn.execute("ALTER TABLE stocks ADD COLUMN use_manual INTEGER DEFAULT 0")
+            # transactions
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(transactions)").fetchall()]
+            if "payment_method" not in cols:
+                conn.execute("ALTER TABLE transactions ADD COLUMN payment_method TEXT DEFAULT '현금'")
+            if "installment_months" not in cols:
+                conn.execute("ALTER TABLE transactions ADD COLUMN installment_months INTEGER DEFAULT 1")
+            if "installment_index" not in cols:
+                conn.execute("ALTER TABLE transactions ADD COLUMN installment_index INTEGER DEFAULT 1")
+            if "installment_group_id" not in cols:
+                conn.execute("ALTER TABLE transactions ADD COLUMN installment_group_id TEXT")
             conn.commit()
         except Exception as e:
             print(f"[migrate] {e}")
         finally:
             conn.close()
 
+    @staticmethod
+    def _add_months_to_date(date_str, months):
+        """YYYY-MM-DD 문자열에 months를 더해서 새 날짜 문자열 반환"""
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        m = d.month - 1 + months
+        y = d.year + m // 12
+        m = m % 12 + 1
+        day = min(d.day, 28)
+        return date(y, m, day).strftime("%Y-%m-%d")
+
     # ===== 거래내역 =====
-    def add_transaction(self, date, type_, category, amount, memo=""):
+    def add_transaction(self, date_str, type_, category, amount, memo="",
+                         payment_method="현금", installment_months=1):
+        """
+        installment_months>1 이면 같은 금액을 N개월로 자동 분할 (월별 1건씩 생성).
+        - 1회차는 입력 날짜에, 2회차부터는 같은 일자의 다음 달들에 기록.
+        - 마지막 회차에서 반올림 오차를 보정해 총합이 amount와 정확히 일치.
+        """
+        if installment_months and installment_months > 1 and type_ == "expense":
+            group_id = f"INST{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+            per = round(amount / installment_months)
+            conn = self.get_connection()
+            running = 0
+            for i in range(installment_months):
+                # 마지막 회차: 반올림 오차 흡수
+                if i == installment_months - 1:
+                    this_amount = amount - running
+                else:
+                    this_amount = per
+                    running += per
+                this_date = self._add_months_to_date(date_str, i)
+                this_memo = (f"[할부 {i+1}/{installment_months}] " +
+                             (memo or category))
+                conn.execute("""
+                    INSERT INTO transactions
+                    (date, type, category, amount, memo, payment_method,
+                     installment_months, installment_index, installment_group_id)
+                    VALUES (?,?,?,?,?,?,?,?,?)
+                """, (this_date, type_, category, this_amount, this_memo,
+                      payment_method, installment_months, i + 1, group_id))
+            conn.commit()
+            conn.close()
+        else:
+            conn = self.get_connection()
+            conn.execute("""
+                INSERT INTO transactions
+                (date, type, category, amount, memo, payment_method,
+                 installment_months, installment_index, installment_group_id)
+                VALUES (?,?,?,?,?,?,?,?,?)
+            """, (date_str, type_, category, amount, memo,
+                  payment_method, 1, 1, None))
+            conn.commit()
+            conn.close()
+
+    def delete_installment_group(self, group_id):
         conn = self.get_connection()
-        conn.execute(
-            "INSERT INTO transactions (date, type, category, amount, memo) VALUES (?,?,?,?,?)",
-            (date, type_, category, amount, memo)
-        )
+        conn.execute("DELETE FROM transactions WHERE installment_group_id=?",
+                     (group_id,))
         conn.commit()
         conn.close()
 
@@ -559,7 +642,41 @@ class Database:
         """).fetchone()
         conn.close()
         return row["total"] or 0
+
+    # ===== 보험 =====
+    def add_insurance(self, company, name, category, insured_person,
+                       monthly_premium, start_date, maturity_date=None,
+                       payment_end_date=None, coverage="", memo=""):
         conn = self.get_connection()
-        conn.execute("DELETE FROM schedules WHERE id=?", (sid,))
+        conn.execute("""
+            INSERT INTO insurances (company, name, category, insured_person,
+                                     monthly_premium, start_date, maturity_date,
+                                     payment_end_date, coverage, memo)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (company, name, category, insured_person, monthly_premium,
+              start_date, maturity_date or None, payment_end_date or None,
+              coverage, memo))
         conn.commit()
         conn.close()
+
+    def get_insurances(self):
+        conn = self.get_connection()
+        rows = conn.execute(
+            "SELECT * FROM insurances ORDER BY id DESC"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def delete_insurance(self, iid):
+        conn = self.get_connection()
+        conn.execute("DELETE FROM insurances WHERE id=?", (iid,))
+        conn.commit()
+        conn.close()
+
+    def get_monthly_premium_total(self):
+        conn = self.get_connection()
+        row = conn.execute(
+            "SELECT SUM(monthly_premium) as total FROM insurances"
+        ).fetchone()
+        conn.close()
+        return row["total"] or 0

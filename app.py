@@ -422,32 +422,56 @@ class AssetManagerApp(tk.Tk):
 
         list_frame = tk.Frame(frame, bg=BG)
         list_frame.pack(fill="both", expand=True, padx=20, pady=4)
-        cols = ("id", "date", "type", "category", "amount", "memo")
-        headers = ("ID", "날짜", "구분", "카테고리", "금액", "메모")
+        cols = ("id", "date", "type", "category", "amount",
+                "method", "install", "memo")
+        headers = ("ID", "날짜", "구분", "카테고리", "금액",
+                   "결제수단", "할부", "메모")
+        widths = (40, 95, 60, 90, 110, 90, 70, 320)
         self.tx_tree = ttk.Treeview(list_frame, columns=cols, show="headings")
-        widths = (50, 100, 80, 100, 120, 400)
         for c, h, w in zip(cols, headers, widths):
             self.tx_tree.heading(c, text=h)
             self.tx_tree.column(c, width=w, anchor="w")
         self.tx_tree.tag_configure("inc", foreground=ACCENT)
         self.tx_tree.tag_configure("exp", foreground=DANGER)
+        self.tx_tree.tag_configure("install", background="#fff8e1")
         self.tx_tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(list_frame, orient="vertical",
                             command=self.tx_tree.yview)
         sb.pack(side="right", fill="y")
         self.tx_tree.configure(yscrollcommand=sb.set)
-        ttk.Button(frame, text="선택 삭제", command=self.delete_transaction).pack(
-            anchor="e", padx=20, pady=(4, 12))
+        btn_row = tk.Frame(frame, bg=BG)
+        btn_row.pack(fill="x", padx=20, pady=(4, 12))
+        ttk.Button(btn_row, text="선택 삭제",
+                   command=self.delete_transaction).pack(side="right")
+        ttk.Button(btn_row, text="이 할부 전체 삭제",
+                   command=self.delete_installment_group).pack(side="right", padx=6)
+
+    def _on_method_change(self, _event=None):
+        """결제수단이 신용카드일 때만 할부 콤보 활성화"""
+        if self.tx_method.get() == "신용카드":
+            self.tx_install.configure(state="readonly")
+        else:
+            self.tx_install.set("일시불")
+            self.tx_install.configure(state="disabled")
 
     def add_transaction(self):
         try:
             amount = float(self.tx_amount.get().replace(",", ""))
+            method = self.tx_method.get()
+            # 할부 개월 파싱
+            install_months = 1
+            if method == "신용카드":
+                val = self.tx_install.get()
+                if val != "일시불":
+                    install_months = int(val.replace("개월", ""))
             self.db.add_transaction(
                 self.tx_date.get(), self.tx_type.get(),
-                self.tx_cat.get(), amount, self.tx_memo.get()
+                self.tx_cat.get(), amount, self.tx_memo.get(),
+                payment_method=method, installment_months=install_months
             )
             self.tx_amount.delete(0, "end")
             self.tx_memo.delete(0, "end")
+            self.tx_install.set("일시불")
             self.refresh_ledger()
             self.refresh_dashboard()
         except ValueError:
@@ -461,6 +485,28 @@ class AssetManagerApp(tk.Tk):
         self.db.delete_transaction(tid)
         self.refresh_ledger()
         self.refresh_dashboard()
+
+    def delete_installment_group(self):
+        """선택한 거래가 할부면 같은 할부 묶음 전체 삭제"""
+        sel = self.tx_tree.selection()
+        if not sel:
+            return
+        tid = self.tx_tree.item(sel[0])["values"][0]
+        # 해당 거래의 group_id 조회
+        group_id = None
+        for t in self.db.get_transactions():
+            if t["id"] == tid:
+                group_id = t.get("installment_group_id")
+                break
+        if not group_id:
+            messagebox.showinfo("안내", "선택한 항목은 할부 거래가 아닙니다. "
+                                       "'선택 삭제'를 사용하세요.")
+            return
+        if messagebox.askyesno("할부 전체 삭제",
+                               "이 할부에 속한 모든 회차를 삭제할까요?"):
+            self.db.delete_installment_group(group_id)
+            self.refresh_ledger()
+            self.refresh_dashboard()
 
     def _resolve_ledger_period(self):
         """선택된 기간 필터를 (start_str, end_str, label) 로 변환"""
@@ -511,16 +557,27 @@ class AssetManagerApp(tk.Tk):
         total_income = 0
         total_expense = 0
         for r in txs:
-            tag = "inc" if r["type"] == "income" else "exp"
             kind = "수입" if r["type"] == "income" else "지출"
             sign = "+" if r["type"] == "income" else "-"
             if r["type"] == "income":
                 total_income += r["amount"]
             else:
                 total_expense += r["amount"]
-            self.tx_tree.insert("", "end", tags=(tag,), values=(
+            # 할부 표시
+            inst_months = r.get("installment_months") or 1
+            inst_idx = r.get("installment_index") or 1
+            if inst_months and inst_months > 1:
+                install_disp = f"{inst_idx}/{inst_months}"
+                tags = ("exp", "install") if r["type"] == "expense" else ("inc", "install")
+            else:
+                install_disp = "일시불"
+                tags = ("inc",) if r["type"] == "income" else ("exp",)
+            self.tx_tree.insert("", "end", tags=tags, values=(
                 r["id"], r["date"], kind, r["category"],
-                f"{sign}{won(r['amount'])}", r["memo"] or ""
+                f"{sign}{won(r['amount'])}",
+                r.get("payment_method") or "현금",
+                install_disp,
+                r["memo"] or ""
             ))
 
         balance = total_income - total_expense

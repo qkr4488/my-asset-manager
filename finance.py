@@ -327,25 +327,3 @@ def fetch_stock_news(ticker, limit=10):
     except Exception as e:
         print(f"[fetch_stock_news] {ticker} 실패: {e}")
         return []
- or it
-            title = content.get("title")
-            if not title:
-                continue
-            pub = (content.get("provider") or {}).get("displayName") or content.get(
-                "publisher", "")
-            link = (content.get("canonicalUrl") or {}).get("url") or content.get(
-                "link", "")
-            ts = content.get("pubDate") or content.get("providerPublishTime")
-            if isinstance(ts, (int, float)):
-                ts = datetime.fromtimestamp(ts).isoformat(timespec="minutes")
-            result.append({
-                "title": title,
-                "publisher": pub,
-                "link": link,
-                "time": ts or "",
-                "ticker": ticker,
-            })
-        return result
-    except Exception as e:
-        print(f"[fetch_stock_news] {ticker} 실패: {e}")
-        return []

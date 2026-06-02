@@ -13,6 +13,7 @@ from database import Database
 from finance import (
     compound_deposit, compound_savings, calculate_deposit,
     maturity_date, fetch_stock_quote, fetch_stock_news,
+    fetch_stock_name, analyze_stock,
     current_deposit_value, insurance_stats,
 )
 
@@ -32,6 +33,21 @@ CATEGORY_COLORS = {
     "커리어": "#9b59b6", "관계": "#e67e22", "취미": "#1abc9c",
     "기타": "#7a8aa3",
 }
+
+# 가계부 카테고리별 색상 (대시보드 차트용)
+LEDGER_CATEGORY_COLORS = {
+    "식비": "#ff6b6b", "교통": "#4dabf7", "주거": "#845ef7",
+    "통신": "#22b8cf", "쇼핑": "#ff8787", "의료": "#51cf66",
+    "교육": "#fcc419", "여가": "#ff922b", "급여": "#37b24d",
+    "용돈": "#74c0fc", "투자수익": "#9775fa", "기타": "#868e96",
+}
+
+# 차트 색상 팔레트 (카테고리에 색이 없을 때 순환)
+CHART_PALETTE = [
+    "#ff6b6b", "#4dabf7", "#fcc419", "#51cf66", "#ff922b",
+    "#845ef7", "#22b8cf", "#ff8787", "#9775fa", "#37b24d",
+    "#74c0fc", "#e64980", "#15aabf", "#fab005", "#7950f2",
+]
 
 QUOTES = [
     "작은 진전도 진전이다. 매일 한 걸음씩.",
@@ -132,6 +148,7 @@ class AssetManagerApp(tk.Tk):
         self.tab_deposit = ttk.Frame(self.nb)
         self.tab_stock = ttk.Frame(self.nb)
         self.tab_trade = ttk.Frame(self.nb)
+        self.tab_analysis = ttk.Frame(self.nb)
         self.tab_asset = ttk.Frame(self.nb)
         self.tab_insurance = ttk.Frame(self.nb)
         self.tab_godlife = ttk.Frame(self.nb)
@@ -142,6 +159,7 @@ class AssetManagerApp(tk.Tk):
         self.nb.add(self.tab_deposit, text="🏦 적금/예금")
         self.nb.add(self.tab_stock, text="📈 주식/ETF")
         self.nb.add(self.tab_trade, text="💱 매매손익")
+        self.nb.add(self.tab_analysis, text="🔬 주식분석")
         self.nb.add(self.tab_asset, text="🏠 기타 자산")
         self.nb.add(self.tab_insurance, text="🛡 보험")
         self.nb.add(self.tab_godlife, text="✨ 갓생살기")
@@ -152,6 +170,7 @@ class AssetManagerApp(tk.Tk):
         self._build_deposit()
         self._build_stock()
         self._build_trade()
+        self._build_analysis()
         self._build_asset()
         self._build_insurance()
         self._build_godlife()
@@ -195,7 +214,7 @@ class AssetManagerApp(tk.Tk):
         for c in range(4):
             cards2.columnconfigure(c, weight=1)
 
-        # 이번 달 수입/지출
+        # 이번 달 수입/지출 합계
         ttk.Label(frame, text="이번 달 수입/지출",
                   style="Sub.TLabel").pack(anchor="w", padx=20, pady=(16, 4))
         mb = tk.Frame(frame, bg=CARD_BG, relief="flat")
@@ -213,16 +232,140 @@ class AssetManagerApp(tk.Tk):
                                     padx=20, pady=12)
         self.lbl_balance.pack(side="left")
 
+        # 카테고리별 도넛 차트 (이번 달)
+        ttk.Label(frame, text="이번 달 카테고리별 분석",
+                  style="Sub.TLabel").pack(anchor="w", padx=20, pady=(14, 4))
+        charts_wrap = tk.Frame(frame, bg=BG)
+        charts_wrap.pack(fill="x", padx=20, pady=4)
+
+        # 지출 차트
+        self.expense_chart_card = tk.Frame(charts_wrap, bg=CARD_BG, bd=0,
+                                            highlightthickness=1,
+                                            highlightbackground=SOFT)
+        self.expense_chart_card.grid(row=0, column=0, padx=(0, 6), sticky="nsew")
+        tk.Label(self.expense_chart_card, text="💸 지출 분석",
+                 bg=CARD_BG, fg=DANGER,
+                 font=("Malgun Gothic", 11, "bold")).pack(
+            anchor="w", padx=14, pady=(10, 0))
+        ec_inner = tk.Frame(self.expense_chart_card, bg=CARD_BG)
+        ec_inner.pack(fill="both", expand=True, padx=10, pady=8)
+        self.expense_canvas = tk.Canvas(ec_inner, width=220, height=220,
+                                         bg=CARD_BG, highlightthickness=0)
+        self.expense_canvas.pack(side="left", padx=(4, 8))
+        self.expense_legend = tk.Frame(ec_inner, bg=CARD_BG)
+        self.expense_legend.pack(side="left", fill="both", expand=True)
+
+        # 수입 차트
+        self.income_chart_card = tk.Frame(charts_wrap, bg=CARD_BG, bd=0,
+                                           highlightthickness=1,
+                                           highlightbackground=SOFT)
+        self.income_chart_card.grid(row=0, column=1, padx=(6, 0), sticky="nsew")
+        tk.Label(self.income_chart_card, text="💰 수입 분석",
+                 bg=CARD_BG, fg=ACCENT,
+                 font=("Malgun Gothic", 11, "bold")).pack(
+            anchor="w", padx=14, pady=(10, 0))
+        ic_inner = tk.Frame(self.income_chart_card, bg=CARD_BG)
+        ic_inner.pack(fill="both", expand=True, padx=10, pady=8)
+        self.income_canvas = tk.Canvas(ic_inner, width=220, height=220,
+                                        bg=CARD_BG, highlightthickness=0)
+        self.income_canvas.pack(side="left", padx=(4, 8))
+        self.income_legend = tk.Frame(ic_inner, bg=CARD_BG)
+        self.income_legend.pack(side="left", fill="both", expand=True)
+
+        charts_wrap.columnconfigure(0, weight=1)
+        charts_wrap.columnconfigure(1, weight=1)
+
         # 오늘/내일
         ttk.Label(frame, text="오늘 / 내일 할 일",
                   style="Sub.TLabel").pack(anchor="w", padx=20, pady=(14, 4))
         sb = tk.Frame(frame, bg=CARD_BG)
-        sb.pack(fill="both", expand=True, padx=20, pady=4)
-        self.dash_schedule = tk.Text(sb, height=8, font=("Malgun Gothic", 10),
+        sb.pack(fill="both", expand=True, padx=20, pady=(4, 12))
+        self.dash_schedule = tk.Text(sb, height=6, font=("Malgun Gothic", 10),
                                      bg=CARD_BG, fg=FG, relief="flat",
                                      padx=14, pady=10)
         self.dash_schedule.pack(fill="both", expand=True)
         self.dash_schedule.configure(state="disabled")
+
+    # ---- 도넛 차트 그리기 ----
+    def _draw_donut(self, canvas, legend_frame, items, empty_text):
+        """
+        canvas: tk.Canvas (220x220 권장)
+        legend_frame: 범례를 그릴 프레임
+        items: [(category, amount), ...]
+        """
+        canvas.delete("all")
+        for w in legend_frame.winfo_children():
+            w.destroy()
+
+        # 데이터 없음
+        if not items or sum(v for _, v in items) <= 0:
+            canvas.create_oval(30, 30, 190, 190,
+                               outline=SOFT, width=2, fill=CARD_BG)
+            canvas.create_text(110, 110, text="데이터 없음",
+                               fill=MUTED,
+                               font=("Malgun Gothic", 10))
+            tk.Label(legend_frame, text=empty_text, bg=CARD_BG, fg=MUTED,
+                     font=("Malgun Gothic", 9), wraplength=200,
+                     justify="left").pack(anchor="w", pady=8)
+            return
+
+        total = sum(v for _, v in items)
+
+        # 색상 결정 (사전 정의 색상 우선)
+        used_colors = []
+        for i, (cat, _) in enumerate(items):
+            c = LEDGER_CATEGORY_COLORS.get(cat) or \
+                CHART_PALETTE[i % len(CHART_PALETTE)]
+            used_colors.append(c)
+
+        # 도넛 그리기 (90도에서 시작, 시계방향)
+        bbox = (20, 20, 200, 200)  # 외부 원 영역
+        start = 90.0
+        for (cat, val), color in zip(items, used_colors):
+            extent = -(val / total) * 360.0
+            # 너무 작은 조각도 보이게 최소 0.5도
+            if 0 < abs(extent) < 0.5:
+                extent = -0.5 if extent < 0 else 0.5
+            canvas.create_arc(bbox, start=start, extent=extent,
+                              fill=color, outline="white", width=2,
+                              style="pieslice")
+            start += extent
+
+        # 중심 도넛 구멍
+        canvas.create_oval(70, 70, 150, 150, fill=CARD_BG, outline="")
+
+        # 중앙 텍스트 (총액)
+        canvas.create_text(110, 100, text="합계",
+                           fill=MUTED, font=("Malgun Gothic", 9))
+        canvas.create_text(110, 120, text=won(total),
+                           fill=FG, font=("Malgun Gothic", 11, "bold"))
+
+        # 범례 (상위 8개)
+        for (cat, val), color in zip(items[:8], used_colors[:8]):
+            pct = val / total * 100
+            row = tk.Frame(legend_frame, bg=CARD_BG)
+            row.pack(fill="x", pady=1)
+            tk.Label(row, text="■", bg=CARD_BG, fg=color,
+                     font=("Malgun Gothic", 11, "bold")).pack(side="left")
+            tk.Label(row, text=f" {cat}", bg=CARD_BG, fg=FG,
+                     font=("Malgun Gothic", 9, "bold")).pack(side="left")
+            tk.Label(row, text=f"  {pct:.1f}%", bg=CARD_BG, fg=MUTED,
+                     font=("Malgun Gothic", 9)).pack(side="left")
+            tk.Label(row, text=f"  {won(val)}", bg=CARD_BG, fg=FG,
+                     font=("Malgun Gothic", 9)).pack(side="right")
+
+        if len(items) > 8:
+            etc = sum(v for _, v in items[8:])
+            row = tk.Frame(legend_frame, bg=CARD_BG)
+            row.pack(fill="x", pady=1)
+            tk.Label(row, text="…", bg=CARD_BG, fg=MUTED,
+                     font=("Malgun Gothic", 10)).pack(side="left")
+            tk.Label(row, text=f" 외 {len(items) - 8}개",
+                     bg=CARD_BG, fg=MUTED,
+                     font=("Malgun Gothic", 9)).pack(side="left")
+            tk.Label(row, text=f"{won(etc)}",
+                     bg=CARD_BG, fg=MUTED,
+                     font=("Malgun Gothic", 9)).pack(side="right")
 
     def _make_card(self, parent, title, value, color):
         f = tk.Frame(parent, bg=CARD_BG, bd=0, highlightthickness=0)
@@ -282,6 +425,16 @@ class AssetManagerApp(tk.Tk):
         self.lbl_income.config(text=f"수입: {won(s['income'])}")
         self.lbl_expense.config(text=f"지출: {won(s['expense'])}")
         self.lbl_balance.config(text=f"잔액: {won(bal)}")
+
+        # 카테고리별 도넛 차트
+        expense_cats = self.db.get_category_summary(now.year, now.month, "expense")
+        income_cats = self.db.get_category_summary(now.year, now.month, "income")
+        self._draw_donut(self.expense_canvas, self.expense_legend,
+                         expense_cats,
+                         "이번 달 지출 내역이 없어요.\n가계부에 거래를 등록해보세요!")
+        self._draw_donut(self.income_canvas, self.income_legend,
+                         income_cats,
+                         "이번 달 수입 내역이 없어요.")
 
         pts = self.db.get_total_points()
         today_pts = self.db.get_today_points()
@@ -765,22 +918,34 @@ class AssetManagerApp(tk.Tk):
         tk.Label(form, text="티커", bg=BG).grid(row=0, column=0, padx=4)
         self.st_ticker = tk.Entry(form, width=12)
         self.st_ticker.grid(row=0, column=1, padx=4)
-        tk.Label(form, text="종목명", bg=BG).grid(row=0, column=2, padx=4)
-        self.st_name = tk.Entry(form, width=16)
-        self.st_name.grid(row=0, column=3, padx=4)
-        tk.Label(form, text="수량", bg=BG).grid(row=0, column=4, padx=4)
+        # 티커 입력 후 Tab/Enter면 자동으로 종목명 조회
+        self.st_ticker.bind("<FocusOut>",
+                            lambda _e: self._auto_fill_stock_name())
+        self.st_ticker.bind("<Return>",
+                            lambda _e: self._auto_fill_stock_name())
+        ttk.Button(form, text="🔍 종목명 자동",
+                   command=self._auto_fill_stock_name).grid(
+            row=0, column=2, padx=2)
+        tk.Label(form, text="종목명", bg=BG).grid(row=0, column=3, padx=4)
+        self.st_name = tk.Entry(form, width=18)
+        self.st_name.grid(row=0, column=4, padx=4)
+        tk.Label(form, text="수량", bg=BG).grid(row=0, column=5, padx=4)
         self.st_qty = tk.Entry(form, width=8)
-        self.st_qty.grid(row=0, column=5, padx=4)
-        tk.Label(form, text="평균매수가", bg=BG).grid(row=0, column=6, padx=4)
+        self.st_qty.grid(row=0, column=6, padx=4)
+        tk.Label(form, text="평균매수가", bg=BG).grid(row=0, column=7, padx=4)
         self.st_avg = tk.Entry(form, width=12)
-        self.st_avg.grid(row=0, column=7, padx=4)
-        tk.Label(form, text="통화", bg=BG).grid(row=0, column=8, padx=4)
+        self.st_avg.grid(row=0, column=8, padx=4)
+        tk.Label(form, text="통화", bg=BG).grid(row=0, column=9, padx=4)
         self.st_currency = ttk.Combobox(form, values=["KRW", "USD", "JPY"],
                                          width=6, state="readonly")
         self.st_currency.set("KRW")
-        self.st_currency.grid(row=0, column=9, padx=4)
+        self.st_currency.grid(row=0, column=10, padx=4)
         ttk.Button(form, text="추가", command=self.add_stock).grid(
-            row=0, column=10, padx=8)
+            row=0, column=11, padx=8)
+        # 안내문구
+        tk.Label(form, text="💡 같은 티커를 다른 단가로 추가하면 평균단가로 자동 병합됩니다.",
+                 bg=BG, fg=MUTED, font=("Malgun Gothic", 9)).grid(
+            row=1, column=0, columnspan=12, sticky="w", padx=4, pady=(6, 0))
 
         tb = tk.Frame(frame, bg=BG)
         tb.pack(fill="x", padx=20, pady=4)
@@ -890,19 +1055,82 @@ class AssetManagerApp(tk.Tk):
         ttk.Button(dlg, text="닫기",
                    command=dlg.destroy).pack(pady=(0, 12))
 
+    def _auto_fill_stock_name(self, entry_ticker=None, entry_name=None,
+                              ctx="stock"):
+        """
+        티커 입력란에서 자동으로 종목명을 조회해 채워줌.
+        entry_ticker/entry_name 을 직접 주면 다른 탭에서도 재사용 가능.
+        """
+        if entry_ticker is None:
+            entry_ticker = self.st_ticker
+        if entry_name is None:
+            entry_name = self.st_name
+        ticker = entry_ticker.get().strip().upper()
+        if not ticker:
+            return
+        # 이미 종목명이 채워져 있으면 덮어쓰지 않음 (FocusOut에서 호출될 때)
+        if entry_name.get().strip():
+            return
+
+        # 사용자가 빠르게 다시 클릭해도 무한 로딩이 안 되도록
+        entry_name.delete(0, "end")
+        entry_name.insert(0, "조회중...")
+        entry_name.configure(state="disabled")
+
+        # 통화 추정 (st 탭일 때만)
+        if ctx == "stock":
+            try:
+                from finance import _guess_currency
+                cur = _guess_currency(ticker)
+                if cur in ("KRW", "USD", "JPY"):
+                    self.st_currency.set(cur)
+            except Exception:
+                pass
+
+        def worker():
+            name = fetch_stock_name(ticker)
+
+            def done():
+                entry_name.configure(state="normal")
+                entry_name.delete(0, "end")
+                if name:
+                    entry_name.insert(0, name)
+                # 실패해도 메시지박스는 띄우지 않음 (FocusOut에서 짜증날 수 있어서)
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def add_stock(self):
         try:
+            ticker = self.st_ticker.get().strip().upper()
+            name = self.st_name.get().strip()
+            # "조회중..." 상태면 멈추라고 알려줌
+            if name in ("조회중...", ""):
+                name = ticker  # 빈 이름이면 티커를 종목명으로 사용
             qty = float(self.st_qty.get())
             avg = float(self.st_avg.get().replace(",", ""))
-            self.db.add_stock(
-                self.st_ticker.get().strip().upper(),
-                self.st_name.get().strip(),
-                qty, avg, self.st_currency.get()
+            if not ticker:
+                messagebox.showwarning("입력 필요", "티커를 입력해주세요.")
+                return
+            result = self.db.add_stock(
+                ticker, name, qty, avg, self.st_currency.get()
             )
             for e in (self.st_ticker, self.st_name, self.st_qty, self.st_avg):
                 e.delete(0, "end")
             self.refresh_stock()
             self.refresh_dashboard()
+
+            # 병합 안내
+            if result and result[0] == "merged":
+                _, _, old_qty, old_avg, new_qty, new_avg = result
+                messagebox.showinfo(
+                    "자동 병합 완료",
+                    f"같은 티커({ticker})가 이미 있어서 평균단가로 병합했습니다.\n\n"
+                    f"  이전:  {old_qty:g}주 × {won(old_avg)}\n"
+                    f"  추가:  {qty:g}주 × {won(avg)}\n"
+                    f"  최종:  {new_qty:g}주 × {won(new_avg)}  ← 새 평균단가"
+                )
         except Exception as e:
             messagebox.showerror("입력 오류", f"숫자 입력을 확인해주세요.\n{e}")
 
@@ -1069,9 +1297,20 @@ class AssetManagerApp(tk.Tk):
         tk.Label(form, text="티커", bg=BG).grid(row=0, column=4, padx=4)
         self.tr_ticker = tk.Entry(form, width=12)
         self.tr_ticker.grid(row=0, column=5, padx=4)
-        tk.Label(form, text="종목명", bg=BG).grid(row=0, column=6, padx=4)
+        # 자동 종목명 채우기
+        self.tr_ticker.bind("<FocusOut>",
+                            lambda _e: self._auto_fill_stock_name(
+                                self.tr_ticker, self.tr_name, ctx="trade"))
+        self.tr_ticker.bind("<Return>",
+                            lambda _e: self._auto_fill_stock_name(
+                                self.tr_ticker, self.tr_name, ctx="trade"))
+        ttk.Button(form, text="🔍",
+                   command=lambda: self._auto_fill_stock_name(
+                       self.tr_ticker, self.tr_name, ctx="trade"),
+                   width=3).grid(row=0, column=6, padx=2)
+        tk.Label(form, text="종목명", bg=BG).grid(row=0, column=7, padx=4)
         self.tr_name = tk.Entry(form, width=14)
-        self.tr_name.grid(row=0, column=7, padx=4)
+        self.tr_name.grid(row=0, column=8, padx=4)
         tk.Label(form, text="수량", bg=BG).grid(row=1, column=0, padx=4, pady=(8, 0))
         self.tr_qty = tk.Entry(form, width=12)
         self.tr_qty.grid(row=1, column=1, padx=4, pady=(8, 0))
@@ -1086,7 +1325,7 @@ class AssetManagerApp(tk.Tk):
         self.tr_memo = tk.Entry(form, width=18)
         self.tr_memo.grid(row=1, column=7, padx=4, pady=(8, 0))
         ttk.Button(form, text="추가", command=self.add_trade).grid(
-            row=0, column=8, rowspan=2, padx=8, sticky="ns")
+            row=0, column=9, rowspan=2, padx=8, sticky="ns")
 
         tb = tk.Frame(frame, bg=BG)
         tb.pack(fill="x", padx=20, pady=4)
@@ -1191,6 +1430,585 @@ class AssetManagerApp(tk.Tk):
             text=f"매수 {won(total_buy)}  |  매도 {won(total_sell)}  |  "
                  f"실현손익 {sign}{won(total_pnl)}",
             fg=ACCENT if total_pnl >= 0 else DANGER)
+
+    # ==================== 주식 분석 ====================
+    def _build_analysis(self):
+        frame = self.tab_analysis
+        top = tk.Frame(frame, bg=BG)
+        top.pack(fill="x", padx=20, pady=(18, 4))
+        ttk.Label(top, text="🔬 주식 기술적 분석",
+                  style="Header.TLabel").pack(side="left")
+        ttk.Button(top, text="❓ 티커 예시",
+                   command=self.show_ticker_examples).pack(side="right")
+
+        tk.Label(frame,
+                 text="💡 yfinance 가격 이력 기반 기술적 분석 — 지지선·저항선·"
+                      "추천 매매구간을 자동 산출합니다. "
+                      "지표: MA(5/20/60/120) · RSI · 볼린저밴드 · 피보나치 되돌림 · 52주 고저점. "
+                      "최종 매매 판단은 본인 책임 ⚠️",
+                 bg=BG, fg=MUTED, font=("Malgun Gothic", 9),
+                 wraplength=1000, justify="left").pack(
+            anchor="w", padx=20, pady=(0, 6))
+
+        # 입력 폼
+        form = tk.LabelFrame(frame, text="종목 분석", bg=BG, fg=FG,
+                              font=("Malgun Gothic", 10, "bold"),
+                              padx=10, pady=10, bd=1, relief="solid")
+        form.pack(fill="x", padx=20, pady=6)
+
+        tk.Label(form, text="티커", bg=BG).pack(side="left", padx=4)
+        self.an_ticker = tk.Entry(form, width=14, font=("Malgun Gothic", 11))
+        self.an_ticker.pack(side="left", padx=4)
+        self.an_ticker.bind("<Return>", lambda _e: self.run_analysis())
+
+        ttk.Button(form, text="🔍 종목명 확인",
+                   command=lambda: self._auto_fill_stock_name(
+                       self.an_ticker, self.an_name, ctx="analysis")).pack(
+            side="left", padx=2)
+        tk.Label(form, text="종목명", bg=BG).pack(side="left", padx=4)
+        self.an_name = tk.Entry(form, width=18, font=("Malgun Gothic", 10))
+        self.an_name.pack(side="left", padx=4)
+
+        tk.Label(form, text="기간", bg=BG).pack(side="left", padx=(14, 4))
+        self.an_period = ttk.Combobox(form,
+                                       values=["3mo", "6mo", "1y", "2y"],
+                                       width=6, state="readonly")
+        self.an_period.set("1y")
+        self.an_period.pack(side="left", padx=4)
+
+        ttk.Button(form, text="📊 분석 업데이트",
+                   command=self.run_analysis).pack(side="left", padx=10)
+
+        # 상태 표시
+        self.an_status = tk.Label(
+            frame,
+            text="티커를 입력하고 '분석 업데이트'를 눌러주세요. "
+                 "예: 005930.KS (삼성전자), AAPL, QQQ, 069500.KS (KODEX 200)",
+            bg=BG, fg=MUTED, font=("Malgun Gothic", 9),
+            wraplength=1000, justify="left")
+        self.an_status.pack(anchor="w", padx=20, pady=(2, 6))
+
+        # 결과 스크롤 영역
+        wrap = tk.Frame(frame, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=20, pady=(0, 12))
+        canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.an_container = tk.Frame(canvas, bg=BG)
+        canvas.create_window((0, 0), window=self.an_container, anchor="nw")
+        # 컨테이너 너비를 캔버스 너비에 맞춤
+        def _resize(event):
+            canvas.itemconfig(canvas.find_withtag("all")[0],
+                              width=event.width)
+        canvas.bind("<Configure>", _resize)
+        self.an_container.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+    def run_analysis(self):
+        ticker = self.an_ticker.get().strip().upper()
+        if not ticker:
+            messagebox.showwarning("입력 필요", "티커를 입력해주세요.")
+            return
+        period = self.an_period.get() or "1y"
+        self.an_status.config(
+            text=f"⏳ {ticker} 분석 중... (yfinance에서 {period} 가격 이력 가져오는 중)")
+        # 이전 결과 지우기
+        for w in self.an_container.winfo_children():
+            w.destroy()
+        tk.Label(self.an_container, text="🔄 분석 중입니다...",
+                 bg=BG, fg=MUTED,
+                 font=("Malgun Gothic", 11)).pack(pady=40)
+        self.update_idletasks()
+
+        def worker():
+            # 종목명이 비어있으면 같이 조회
+            name = self.an_name.get().strip()
+            if not name:
+                name = fetch_stock_name(ticker) or ""
+            result = analyze_stock(ticker, period=period)
+
+            def done():
+                if not result:
+                    for w in self.an_container.winfo_children():
+                        w.destroy()
+                    tk.Label(self.an_container,
+                             text=f"❌ {ticker} 분석 실패\n\n"
+                                  f"가능한 원인:\n"
+                                  f"  • 잘못된 티커 (한국주식은 .KS / .KQ 필요)\n"
+                                  f"  • 데이터가 너무 적음 (신규 상장 등)\n"
+                                  f"  • yfinance API 일시 오류",
+                             bg=BG, fg=DANGER,
+                             font=("Malgun Gothic", 11),
+                             justify="left").pack(pady=40)
+                    self.an_status.config(text=f"❌ {ticker} 분석 실패")
+                    return
+                # 종목명 표시
+                if name:
+                    self.an_name.delete(0, "end")
+                    self.an_name.insert(0, name)
+                self._render_analysis(ticker, name, result)
+                self.an_status.config(
+                    text=f"✅ {ticker} {('(' + name + ')') if name else ''} "
+                         f"분석 완료 · "
+                         f"{datetime.now().strftime('%Y-%m-%d %H:%M')} 기준 "
+                         f"· 데이터 {result['data_points']}일")
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fmt_price(self, n, currency):
+        return money(n, currency)
+
+    def _render_analysis(self, ticker, name, r):
+        for w in self.an_container.winfo_children():
+            w.destroy()
+
+        currency = r["currency"]
+        fmt = lambda v: money(v, currency)
+        trend_colors = {"accent": ACCENT, "danger": DANGER, "muted": MUTED}
+
+        # ===== 1. 헤더 카드 =====
+        header = tk.Frame(self.an_container, bg=CARD_BG, bd=0,
+                          highlightthickness=1, highlightbackground=SOFT)
+        header.pack(fill="x", padx=4, pady=(4, 6))
+        h_inner = tk.Frame(header, bg=CARD_BG)
+        h_inner.pack(fill="x", padx=18, pady=14)
+
+        left = tk.Frame(h_inner, bg=CARD_BG)
+        left.pack(side="left", anchor="w")
+        title = ticker if not name else f"{ticker}  ·  {name}"
+        tk.Label(left, text=title, bg=CARD_BG, fg=FG,
+                 font=("Malgun Gothic", 14, "bold")).pack(anchor="w")
+        tk.Label(left, text=r["trend"], bg=CARD_BG,
+                 fg=trend_colors.get(r["trend_color"], MUTED),
+                 font=("Malgun Gothic", 12, "bold")).pack(
+            anchor="w", pady=(4, 0))
+
+        right = tk.Frame(h_inner, bg=CARD_BG)
+        right.pack(side="right", anchor="e")
+        tk.Label(right, text="현재가", bg=CARD_BG, fg=MUTED,
+                 font=("Malgun Gothic", 10)).pack(anchor="e")
+        tk.Label(right, text=fmt(r["current"]), bg=CARD_BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 20, "bold")).pack(anchor="e")
+
+        # ===== 2. 추천 코멘트 (큰 카드) =====
+        v_kind = r["verdict_kind"]
+        v_color = {"buy": ACCENT, "buy_soft": "#69db7c",
+                   "watch": WARN, "watch_neg": "#ff922b",
+                   "sell": DANGER}.get(v_kind, MUTED)
+        v_bg = {"buy": "#e8f5e9", "buy_soft": "#f0fdf4",
+                "watch": "#fff8e1", "watch_neg": "#fff3e0",
+                "sell": "#ffebee"}.get(v_kind, CARD_BG)
+
+        verdict_card = tk.Frame(self.an_container, bg=v_bg,
+                                 highlightthickness=2,
+                                 highlightbackground=v_color)
+        verdict_card.pack(fill="x", padx=4, pady=6)
+        tk.Frame(verdict_card, bg=v_color, height=6).pack(fill="x")
+        v_inner = tk.Frame(verdict_card, bg=v_bg)
+        v_inner.pack(fill="x", padx=18, pady=14)
+        tk.Label(v_inner, text=r["verdict"], bg=v_bg, fg=v_color,
+                 font=("Malgun Gothic", 16, "bold")).pack(anchor="w")
+        tk.Label(v_inner, text=r["verdict_detail"], bg=v_bg, fg=FG,
+                 font=("Malgun Gothic", 11), wraplength=950,
+                 justify="left").pack(anchor="w", pady=(6, 2))
+        tk.Label(v_inner, text=f"종합 점수: {r['score']:+.1f}  "
+                                f"(+높을수록 매수 우호 / -낮을수록 매도 우호)",
+                 bg=v_bg, fg=MUTED,
+                 font=("Malgun Gothic", 9)).pack(anchor="w", pady=(4, 0))
+
+        # ===== 3. 매매 추천 구간 (3박스) =====
+        trade_card = tk.Frame(self.an_container, bg=CARD_BG, bd=0,
+                               highlightthickness=1, highlightbackground=SOFT)
+        trade_card.pack(fill="x", padx=4, pady=6)
+        tk.Label(trade_card, text="🎯 추천 매매 구간",
+                 bg=CARD_BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 13, "bold")).pack(
+            anchor="w", padx=18, pady=(14, 8))
+
+        grid = tk.Frame(trade_card, bg=CARD_BG)
+        grid.pack(fill="x", padx=14, pady=(0, 14))
+
+        def make_zone_box(parent, title, color, bg_color, price_text,
+                          subtitle):
+            box = tk.Frame(parent, bg=bg_color,
+                           highlightthickness=1, highlightbackground=color)
+            tk.Label(box, text=title, bg=bg_color, fg=color,
+                     font=("Malgun Gothic", 11, "bold")).pack(
+                anchor="w", padx=14, pady=(12, 4))
+            tk.Label(box, text=price_text, bg=bg_color, fg=FG,
+                     font=("Malgun Gothic", 14, "bold")).pack(
+                anchor="w", padx=14)
+            tk.Label(box, text=subtitle, bg=bg_color, fg=MUTED,
+                     font=("Malgun Gothic", 9)).pack(
+                anchor="w", padx=14, pady=(2, 12))
+            return box
+
+        # 매수 추천
+        pct_bl = (r["buy_zone_low"] / r["current"] - 1) * 100
+        pct_bh = (r["buy_zone_high"] / r["current"] - 1) * 100
+        buy_box = make_zone_box(
+            grid, "💰 매수 추천", ACCENT, "#e8f5e9",
+            f"{fmt(r['buy_zone_low'])} ~ {fmt(r['buy_zone_high'])}",
+            f"현재가 대비 {pct_bl:+.1f}% ~ {pct_bh:+.1f}%\n"
+            f"(약한 지지선 → 강한 지지선)")
+        buy_box.grid(row=0, column=0, padx=4, pady=4, sticky="nsew")
+
+        # 매도 추천
+        pct_sl = (r["sell_zone_low"] / r["current"] - 1) * 100
+        pct_sh = (r["sell_zone_high"] / r["current"] - 1) * 100
+        sell_box = make_zone_box(
+            grid, "📤 매도 추천", DANGER, "#ffebee",
+            f"{fmt(r['sell_zone_low'])} ~ {fmt(r['sell_zone_high'])}",
+            f"현재가 대비 {pct_sl:+.1f}% ~ {pct_sh:+.1f}%\n"
+            f"(1차 저항선 → 2차 저항선)")
+        sell_box.grid(row=0, column=1, padx=4, pady=4, sticky="nsew")
+
+        # 손절 추천
+        pct_st = (r["stop_loss"] / r["current"] - 1) * 100
+        stop_box = make_zone_box(
+            grid, "🛑 손절 권장가", WARN, "#fff3e0",
+            fmt(r["stop_loss"]),
+            f"현재가 대비 {pct_st:+.1f}%\n"
+            f"(약한 지지선 -3%)")
+        stop_box.grid(row=0, column=2, padx=4, pady=4, sticky="nsew")
+
+        for c in range(3):
+            grid.columnconfigure(c, weight=1)
+
+        # ===== 4. 가격축 막대 + 미니 추이선 =====
+        sr_card = tk.Frame(self.an_container, bg=CARD_BG, bd=0,
+                           highlightthickness=1, highlightbackground=SOFT)
+        sr_card.pack(fill="x", padx=4, pady=6)
+        tk.Label(sr_card, text="📏 지지선 · 저항선 시각화",
+                 bg=CARD_BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 13, "bold")).pack(
+            anchor="w", padx=18, pady=(14, 6))
+
+        # 막대 (가격축)
+        bar_canvas = tk.Canvas(sr_card, height=180, bg=CARD_BG,
+                                highlightthickness=0)
+        bar_canvas.pack(fill="x", padx=14, pady=(4, 8))
+        bar_canvas.bind("<Configure>",
+                         lambda _e, c=bar_canvas, rr=r:
+                         self._draw_price_bar(c, rr))
+
+        # 미니 추이선 (최근 60일 종가)
+        tk.Label(sr_card, text="최근 가격 추이 (60일)",
+                 bg=CARD_BG, fg=MUTED,
+                 font=("Malgun Gothic", 9)).pack(anchor="w", padx=18)
+        mini_canvas = tk.Canvas(sr_card, height=140, bg=CARD_BG,
+                                 highlightthickness=0)
+        mini_canvas.pack(fill="x", padx=14, pady=(2, 14))
+        mini_canvas.bind("<Configure>",
+                          lambda _e, c=mini_canvas, rr=r:
+                          self._draw_mini_chart(c, rr))
+
+        # ===== 5. 기술적 지표 그리드 =====
+        ind_card = tk.Frame(self.an_container, bg=CARD_BG, bd=0,
+                            highlightthickness=1, highlightbackground=SOFT)
+        ind_card.pack(fill="x", padx=4, pady=6)
+        tk.Label(ind_card, text="📊 기술적 지표",
+                 bg=CARD_BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 13, "bold")).pack(
+            anchor="w", padx=18, pady=(14, 8))
+
+        ig = tk.Frame(ind_card, bg=CARD_BG)
+        ig.pack(fill="x", padx=14, pady=(0, 14))
+
+        def gen_ma(name_, ma):
+            if ma is None:
+                return None
+            up = r["current"] > ma
+            return (name_, fmt(ma),
+                    "↑ 위" if up else "↓ 아래",
+                    ACCENT if up else DANGER)
+
+        rng = r["high_52w"] - r["low_52w"]
+        pos_52w = ((r["current"] - r["low_52w"]) / rng * 100) if rng > 0 else 50
+
+        indicators = list(filter(None, [
+            gen_ma("MA5 (5일선)", r["ma5"]),
+            gen_ma("MA20 (20일선)", r["ma20"]),
+            gen_ma("MA60 (60일선)", r["ma60"]),
+            gen_ma("MA120 (120일선)", r["ma120"]),
+            ("RSI(14)", f"{r['rsi']:.1f}",
+             "과매도" if r['rsi'] < 30 else
+             ("과매수" if r['rsi'] > 70 else "중립"),
+             ACCENT if r['rsi'] < 30 else
+             (DANGER if r['rsi'] > 70 else MUTED)),
+            ("볼린저 위치", f"{r['bb_pos'] * 100:.0f}%",
+             "하단" if r['bb_pos'] < 0.3 else
+             ("상단" if r['bb_pos'] > 0.7 else "중앙"),
+             ACCENT if r['bb_pos'] < 0.3 else
+             (DANGER if r['bb_pos'] > 0.7 else MUTED)),
+            ("52주 고가", fmt(r["high_52w"]),
+             f"-{(1 - r['current'] / r['high_52w']) * 100:.1f}%",
+             MUTED),
+            ("52주 저가", fmt(r["low_52w"]),
+             f"+{(r['current'] / r['low_52w'] - 1) * 100:.1f}%",
+             MUTED),
+            ("52주 위치", f"{pos_52w:.0f}%",
+             "저점권" if pos_52w < 30 else
+             ("고점권" if pos_52w > 70 else "중간권"),
+             ACCENT if pos_52w < 30 else
+             (DANGER if pos_52w > 70 else MUTED)),
+            ("단기 예측가 (20일)", fmt(r["forecast_20d"]),
+             f"{(r['forecast_20d'] / r['current'] - 1) * 100:+.1f}%",
+             ACCENT if r['forecast_20d'] > r['current'] else DANGER),
+        ]))
+
+        for i, (lname, val, status, color) in enumerate(indicators):
+            row, col = i // 4, i % 4
+            box = tk.Frame(ig, bg=SOFT,
+                           highlightthickness=1,
+                           highlightbackground="#e3e8f0")
+            box.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
+            tk.Label(box, text=lname, bg=SOFT, fg=MUTED,
+                     font=("Malgun Gothic", 9)).pack(
+                anchor="w", padx=10, pady=(8, 0))
+            tk.Label(box, text=val, bg=SOFT, fg=FG,
+                     font=("Malgun Gothic", 12, "bold")).pack(
+                anchor="w", padx=10)
+            tk.Label(box, text=status, bg=SOFT, fg=color,
+                     font=("Malgun Gothic", 9, "bold")).pack(
+                anchor="w", padx=10, pady=(0, 8))
+
+        for c in range(4):
+            ig.columnconfigure(c, weight=1)
+
+        # ===== 6. 종합 신호 코멘트 =====
+        sig_card = tk.Frame(self.an_container, bg=CARD_BG, bd=0,
+                            highlightthickness=1, highlightbackground=SOFT)
+        sig_card.pack(fill="x", padx=4, pady=6)
+        tk.Label(sig_card, text="💬 종합 분석 신호",
+                 bg=CARD_BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 13, "bold")).pack(
+            anchor="w", padx=18, pady=(14, 6))
+
+        for emoji, msg in r["signals"]:
+            line = tk.Frame(sig_card, bg=CARD_BG)
+            line.pack(fill="x", padx=18, pady=3)
+            tk.Label(line, text=emoji, bg=CARD_BG,
+                     font=("Malgun Gothic", 12)).pack(side="left",
+                                                       padx=(0, 8))
+            tk.Label(line, text=msg, bg=CARD_BG, fg=FG,
+                     font=("Malgun Gothic", 10),
+                     wraplength=900, justify="left").pack(side="left",
+                                                           anchor="w")
+
+        tk.Label(sig_card, text=" ", bg=CARD_BG).pack(pady=4)
+
+        # ===== 면책 =====
+        disc = tk.Frame(self.an_container, bg=BG)
+        disc.pack(fill="x", padx=4, pady=(6, 20))
+        tk.Label(disc,
+                 text="⚠️ 본 분석은 yfinance 가격 이력에서 자동 계산한 "
+                      "기술적 지표일 뿐이며 투자 자문이 아닙니다. "
+                      "기업 펀더멘털·뉴스·시장 분위기는 반영되지 않습니다. "
+                      "매매 판단은 본인 책임 하에 신중히 하세요.",
+                 bg=BG, fg=MUTED, font=("Malgun Gothic", 9),
+                 wraplength=950, justify="left").pack(anchor="w")
+
+    def _draw_price_bar(self, canvas, r):
+        """수평 가격축에 지지선/저항선/현재가를 표시"""
+        canvas.delete("all")
+        w = canvas.winfo_width()
+        h = 180
+        if w < 10:
+            return
+
+        # 가격 범위 (여유 5%)
+        p_min = min(r["low_52w"], r["support_far"]) * 0.97
+        p_max = max(r["high_52w"], r["resistance_far"]) * 1.03
+        if p_max <= p_min:
+            return
+
+        margin = 80
+        usable = w - margin * 2
+
+        def x(price):
+            return margin + (price - p_min) / (p_max - p_min) * usable
+
+        y_main = 90
+
+        # 배경 그라데이션 라인 (저가 → 고가)
+        canvas.create_rectangle(margin, y_main - 3, w - margin, y_main + 3,
+                                 fill=SOFT, outline="")
+
+        # 매수/매도 구간 음영
+        bx0 = x(r["buy_zone_low"])
+        bx1 = x(r["buy_zone_high"])
+        canvas.create_rectangle(bx0, y_main - 18, bx1, y_main + 18,
+                                 fill="#d4edda", outline="")
+        sx0 = x(r["sell_zone_low"])
+        sx1 = x(r["sell_zone_high"])
+        canvas.create_rectangle(sx0, y_main - 18, sx1, y_main + 18,
+                                 fill="#f8d7da", outline="")
+
+        currency = r["currency"]
+        def label(p):
+            if currency == "KRW":
+                return f"{p:,.0f}"
+            return f"{p:,.2f}"
+
+        # 저항선 (위쪽 라벨)
+        for price, lab, color in [
+            (r["resistance_far"], "저항 (먼)", DANGER),
+            (r["resistance_near"], "저항 (가까운)", "#ff8787"),
+        ]:
+            xp = x(price)
+            canvas.create_line(xp, y_main - 28, xp, y_main + 28,
+                                fill=color, width=2, dash=(4, 3))
+            canvas.create_text(xp, y_main - 50, text=lab, fill=color,
+                                font=("Malgun Gothic", 8, "bold"))
+            canvas.create_text(xp, y_main - 38, text=label(price), fill=color,
+                                font=("Malgun Gothic", 9, "bold"))
+
+        # 지지선 (아래쪽 라벨)
+        for price, lab, color in [
+            (r["support_near"], "지지 (가까운)", "#69db7c"),
+            (r["support_far"], "지지 (먼)", ACCENT),
+        ]:
+            xp = x(price)
+            canvas.create_line(xp, y_main - 28, xp, y_main + 28,
+                                fill=color, width=2, dash=(4, 3))
+            canvas.create_text(xp, y_main + 42, text=lab, fill=color,
+                                font=("Malgun Gothic", 8, "bold"))
+            canvas.create_text(xp, y_main + 54, text=label(price), fill=color,
+                                font=("Malgun Gothic", 9, "bold"))
+
+        # 현재가 (강조)
+        xc = x(r["current"])
+        canvas.create_oval(xc - 7, y_main - 7, xc + 7, y_main + 7,
+                            fill=PRIMARY, outline="white", width=2)
+        canvas.create_text(xc, y_main - 18, text="현재가",
+                            fill=PRIMARY, font=("Malgun Gothic", 9, "bold"))
+        canvas.create_text(xc, y_main + 18, text=label(r["current"]),
+                            fill=PRIMARY,
+                            font=("Malgun Gothic", 11, "bold"))
+
+        # 양 끝 라벨 (52주 저가/고가)
+        canvas.create_text(margin - 6, y_main, text=label(p_min),
+                            fill=MUTED, anchor="e",
+                            font=("Malgun Gothic", 8))
+        canvas.create_text(w - margin + 6, y_main, text=label(p_max),
+                            fill=MUTED, anchor="w",
+                            font=("Malgun Gothic", 8))
+
+        # 범례
+        legend_y = h - 14
+        canvas.create_text(margin, legend_y,
+                            text="🟩 매수 구간      🟥 매도 구간      "
+                                 "🔵 현재가",
+                            fill=MUTED, anchor="w",
+                            font=("Malgun Gothic", 8))
+
+    def _draw_mini_chart(self, canvas, r):
+        """최근 60일 종가 미니 선차트"""
+        canvas.delete("all")
+        w = canvas.winfo_width()
+        h = 140
+        if w < 10:
+            return
+        closes = r.get("recent_closes") or []
+        if len(closes) < 2:
+            canvas.create_text(w // 2, h // 2, text="데이터 부족",
+                                fill=MUTED,
+                                font=("Malgun Gothic", 10))
+            return
+
+        margin_l = 70
+        margin_r = 70
+        margin_t = 16
+        margin_b = 22
+
+        p_min = min(closes)
+        p_max = max(closes)
+        if p_max <= p_min:
+            p_max = p_min + 1
+
+        # MA20, 매수/매도 구간을 같은 스케일로 표시
+        # 영역 확장: 지지/저항선도 보이게
+        p_min = min(p_min, r["support_far"]) * 0.99
+        p_max = max(p_max, r["resistance_far"]) * 1.01
+
+        def y(price):
+            return margin_t + (1 - (price - p_min) / (p_max - p_min)) * (h - margin_t - margin_b)
+
+        def x(i):
+            n = len(closes) - 1
+            if n == 0:
+                return margin_l
+            return margin_l + i / n * (w - margin_l - margin_r)
+
+        # 가로 보조선 (Y axis grid: 5단계)
+        currency = r["currency"]
+        def lbl(p):
+            if currency == "KRW":
+                return f"{p:,.0f}"
+            return f"{p:,.2f}"
+
+        for i in range(5):
+            ratio = i / 4
+            yy = margin_t + ratio * (h - margin_t - margin_b)
+            price = p_max - ratio * (p_max - p_min)
+            canvas.create_line(margin_l, yy, w - margin_r, yy,
+                                fill="#f0f0f0", width=1)
+            canvas.create_text(margin_l - 6, yy, text=lbl(price),
+                                fill=MUTED, anchor="e",
+                                font=("Malgun Gothic", 7))
+
+        # 매수 구간 음영
+        by0 = y(r["buy_zone_high"])
+        by1 = y(r["buy_zone_low"])
+        canvas.create_rectangle(margin_l, by0, w - margin_r, by1,
+                                 fill="#e8f5e9", outline="")
+
+        # 매도 구간 음영
+        sy0 = y(r["sell_zone_high"])
+        sy1 = y(r["sell_zone_low"])
+        canvas.create_rectangle(margin_l, sy0, w - margin_r, sy1,
+                                 fill="#ffebee", outline="")
+
+        # 지지선/저항선 점선
+        for price, color in [
+            (r["resistance_near"], DANGER),
+            (r["support_near"], ACCENT),
+        ]:
+            yy = y(price)
+            canvas.create_line(margin_l, yy, w - margin_r, yy,
+                                fill=color, width=1, dash=(4, 3))
+
+        # 종가 폴리라인
+        pts = []
+        for i, c in enumerate(closes):
+            pts.extend([x(i), y(c)])
+        canvas.create_line(*pts, fill=PRIMARY, width=2, smooth=True)
+
+        # 마지막 점 강조
+        last_x = x(len(closes) - 1)
+        last_y = y(closes[-1])
+        canvas.create_oval(last_x - 5, last_y - 5, last_x + 5, last_y + 5,
+                            fill=PRIMARY, outline="white", width=2)
+        canvas.create_text(last_x + 8, last_y - 6,
+                            text=lbl(closes[-1]),
+                            fill=PRIMARY, anchor="w",
+                            font=("Malgun Gothic", 9, "bold"))
+
+        # X축 라벨 (시작/끝 날짜)
+        dates = r.get("recent_dates") or []
+        if dates:
+            canvas.create_text(margin_l, h - 8, text=dates[0],
+                                fill=MUTED, anchor="w",
+                                font=("Malgun Gothic", 8))
+            canvas.create_text(w - margin_r, h - 8, text=dates[-1],
+                                fill=MUTED, anchor="e",
+                                font=("Malgun Gothic", 8))
 
     # ==================== 기타 자산 ====================
     def _build_asset(self):

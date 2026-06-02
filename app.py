@@ -49,6 +49,17 @@ CHART_PALETTE = [
     "#74c0fc", "#e64980", "#15aabf", "#fab005", "#7950f2",
 ]
 
+# 주식 분석 기간 표시명 ↔ yfinance period
+ANALYSIS_PERIOD_MAP = {
+    "1일": "1d",
+    "1주": "5d",
+    "1개월": "1mo",
+    "3개월": "3mo",
+    "6개월": "6mo",
+    "1년": "1y",
+    "2년": "2y",
+}
+
 QUOTES = [
     "작은 진전도 진전이다. 매일 한 걸음씩.",
     "어제의 나보다 오늘 더 나은 내가 되자.",
@@ -95,8 +106,53 @@ class AssetManagerApp(tk.Tk):
         self.today_quote = random.choice(QUOTES)
 
         self._setup_style()
+        self._setup_global_scrolling()
         self._build_ui()
         self.refresh_all()
+
+    # ============ 마우스 휠 스크롤 (전역) ============
+    def _setup_global_scrolling(self):
+        """모든 스크롤 가능한 캔버스에서 휠 작동하도록 전역 바인딩."""
+        def _on_wheel(event):
+            # event.widget에서부터 부모로 거슬러 올라가며
+            # _scroll_canvas 속성을 가진 위젯을 찾음
+            w = event.widget
+            for _ in range(30):  # 안전한 상한
+                if w is None:
+                    break
+                sc = getattr(w, "_scroll_canvas", None)
+                if sc is not None:
+                    try:
+                        # Linux (Button-4/5)
+                        if getattr(event, "num", 0) == 4:
+                            sc.yview_scroll(-3, "units")
+                        elif getattr(event, "num", 0) == 5:
+                            sc.yview_scroll(3, "units")
+                        # Windows/macOS (MouseWheel + delta)
+                        elif event.delta:
+                            sc.yview_scroll(int(-event.delta / 120), "units")
+                    except Exception:
+                        pass
+                    return
+                try:
+                    w = w.master
+                except Exception:
+                    w = None
+        self.bind_all("<MouseWheel>", _on_wheel)
+        self.bind_all("<Button-4>", _on_wheel)
+        self.bind_all("<Button-5>", _on_wheel)
+
+    def _mark_scrollable(self, widget, canvas):
+        """widget과 모든 자손에 _scroll_canvas = canvas 부여."""
+        try:
+            widget._scroll_canvas = canvas
+        except Exception:
+            pass
+        try:
+            for child in widget.winfo_children():
+                self._mark_scrollable(child, canvas)
+        except Exception:
+            pass
 
     # ============ 스타일 ============
     def _setup_style(self):
@@ -955,6 +1011,9 @@ class AssetManagerApp(tk.Tk):
                    command=self.manual_update_price).pack(side="left", padx=6)
         ttk.Button(tb, text="🔒 수동 모드 토글",
                    command=self.toggle_manual_mode).pack(side="left")
+        ttk.Button(tb, text="🔬 선택종목 분석",
+                   command=self.analyze_selected_stock).pack(side="left",
+                                                              padx=6)
         self.st_status = tk.Label(tb, text="", bg=BG, fg=MUTED,
                                    font=("Malgun Gothic", 9))
         self.st_status.pack(side="left", padx=10)
@@ -1231,6 +1290,47 @@ class AssetManagerApp(tk.Tk):
         self.refresh_stock()
         self.refresh_dashboard()
 
+    def analyze_selected_stock(self):
+        """주식 목록에서 선택한 종목을 분석탭으로 보내고 자동 입력."""
+        sel = self.st_tree.selection()
+        if not sel:
+            messagebox.showinfo("안내",
+                                 "분석할 종목을 먼저 목록에서 클릭해 선택해주세요.")
+            return
+        vals = self.st_tree.item(sel[0])["values"]
+        ticker = str(vals[1])
+        name = str(vals[2]) if len(vals) > 2 else ""
+
+        # 분석 탭으로 전환
+        try:
+            self.nb.select(self.tab_analysis)
+        except Exception:
+            pass
+
+        # 티커/종목명 자동 입력
+        self.an_ticker.delete(0, "end")
+        self.an_ticker.insert(0, ticker)
+        try:
+            self.an_name.configure(state="normal")
+        except Exception:
+            pass
+        self.an_name.delete(0, "end")
+        self.an_name.insert(0, name)
+
+        # 안내
+        self.an_status.config(
+            text=f"📌 '{ticker}' ({name}) 가 입력되었습니다. "
+                 f"기간을 선택하고 '📊 분석 업데이트'를 눌러주세요.")
+        # 분석 결과 영역 초기화
+        for w in self.an_container.winfo_children():
+            w.destroy()
+        tk.Label(self.an_container,
+                 text=f"⏳ 기간 선택 후 '📊 분석 업데이트' 버튼을 눌러주세요.\n\n"
+                      f"종목: {ticker} {('· ' + name) if name else ''}",
+                 bg=BG, fg=MUTED,
+                 font=("Malgun Gothic", 11),
+                 justify="left").pack(pady=40)
+
     def refresh_stock(self):
         for i in self.st_tree.get_children():
             self.st_tree.delete(i)
@@ -1470,10 +1570,11 @@ class AssetManagerApp(tk.Tk):
         self.an_name.pack(side="left", padx=4)
 
         tk.Label(form, text="기간", bg=BG).pack(side="left", padx=(14, 4))
-        self.an_period = ttk.Combobox(form,
-                                       values=["3mo", "6mo", "1y", "2y"],
-                                       width=6, state="readonly")
-        self.an_period.set("1y")
+        self.an_period = ttk.Combobox(
+            form,
+            values=["1일", "1주", "1개월", "3개월", "6개월", "1년", "2년"],
+            width=8, state="readonly")
+        self.an_period.set("1년")
         self.an_period.pack(side="left", padx=4)
 
         ttk.Button(form, text="📊 분석 업데이트",
@@ -1500,21 +1601,29 @@ class AssetManagerApp(tk.Tk):
         canvas.create_window((0, 0), window=self.an_container, anchor="nw")
         # 컨테이너 너비를 캔버스 너비에 맞춤
         def _resize(event):
-            canvas.itemconfig(canvas.find_withtag("all")[0],
-                              width=event.width)
+            items = canvas.find_withtag("all")
+            if items:
+                canvas.itemconfig(items[0], width=event.width)
         canvas.bind("<Configure>", _resize)
         self.an_container.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        # 마우스 휠 스크롤
+        self._an_canvas = canvas
+        canvas._scroll_canvas = canvas
+        wrap._scroll_canvas = canvas
+        self.an_container._scroll_canvas = canvas
 
     def run_analysis(self):
         ticker = self.an_ticker.get().strip().upper()
         if not ticker:
             messagebox.showwarning("입력 필요", "티커를 입력해주세요.")
             return
-        period = self.an_period.get() or "1y"
+        period_disp = self.an_period.get() or "1년"
+        period = ANALYSIS_PERIOD_MAP.get(period_disp, "1y")
         self.an_status.config(
-            text=f"⏳ {ticker} 분석 중... (yfinance에서 {period} 가격 이력 가져오는 중)")
+            text=f"⏳ {ticker} 분석 중... "
+                 f"(yfinance에서 {period_disp} 가격 이력 가져오는 중)")
         # 이전 결과 지우기
         for w in self.an_container.winfo_children():
             w.destroy()
@@ -1528,7 +1637,11 @@ class AssetManagerApp(tk.Tk):
             name = self.an_name.get().strip()
             if not name:
                 name = fetch_stock_name(ticker) or ""
-            result = analyze_stock(ticker, period=period)
+            try:
+                result = analyze_stock(ticker, period=period)
+            except Exception as ex:
+                print(f"[analyze] {ticker} 오류: {ex}")
+                result = None
 
             def done():
                 if not result:
@@ -1550,11 +1663,13 @@ class AssetManagerApp(tk.Tk):
                     self.an_name.delete(0, "end")
                     self.an_name.insert(0, name)
                 self._render_analysis(ticker, name, result)
+                pd_disp = result.get("period_display", period)
+                bar_unit = "개" if result.get("is_intraday") else "일"
                 self.an_status.config(
                     text=f"✅ {ticker} {('(' + name + ')') if name else ''} "
-                         f"분석 완료 · "
+                         f"분석 완료 · {pd_disp} · "
                          f"{datetime.now().strftime('%Y-%m-%d %H:%M')} 기준 "
-                         f"· 데이터 {result['data_points']}일")
+                         f"· 데이터 {result['data_points']}{bar_unit}")
 
             self.after(0, done)
 
@@ -1583,10 +1698,15 @@ class AssetManagerApp(tk.Tk):
         title = ticker if not name else f"{ticker}  ·  {name}"
         tk.Label(left, text=title, bg=CARD_BG, fg=FG,
                  font=("Malgun Gothic", 14, "bold")).pack(anchor="w")
-        tk.Label(left, text=r["trend"], bg=CARD_BG,
+        sub_line = tk.Frame(left, bg=CARD_BG)
+        sub_line.pack(anchor="w", pady=(4, 0))
+        tk.Label(sub_line, text=r["trend"], bg=CARD_BG,
                  fg=trend_colors.get(r["trend_color"], MUTED),
-                 font=("Malgun Gothic", 12, "bold")).pack(
-            anchor="w", pady=(4, 0))
+                 font=("Malgun Gothic", 12, "bold")).pack(side="left")
+        tk.Label(sub_line,
+                 text=f"  ·  {r.get('period_display', '')}",
+                 bg=CARD_BG, fg=MUTED,
+                 font=("Malgun Gothic", 10)).pack(side="left")
 
         right = tk.Frame(h_inner, bg=CARD_BG)
         right.pack(side="right", anchor="e")
@@ -1697,8 +1817,10 @@ class AssetManagerApp(tk.Tk):
                          lambda _e, c=bar_canvas, rr=r:
                          self._draw_price_bar(c, rr))
 
-        # 미니 추이선 (최근 60일 종가)
-        tk.Label(sr_card, text="최근 가격 추이 (60일)",
+        # 미니 추이선 (최근 60봉 종가 — 인트라데이면 분/시간봉)
+        n_bars = min(60, len(r.get("recent_closes") or []))
+        unit = "봉" if r.get("is_intraday") else "일"
+        tk.Label(sr_card, text=f"최근 가격 추이 ({n_bars}{unit})",
                  bg=CARD_BG, fg=MUTED,
                  font=("Malgun Gothic", 9)).pack(anchor="w", padx=18)
         mini_canvas = tk.Canvas(sr_card, height=140, bg=CARD_BG,
@@ -1746,13 +1868,13 @@ class AssetManagerApp(tk.Tk):
              ("상단" if r['bb_pos'] > 0.7 else "중앙"),
              ACCENT if r['bb_pos'] < 0.3 else
              (DANGER if r['bb_pos'] > 0.7 else MUTED)),
-            ("52주 고가", fmt(r["high_52w"]),
+            (r.get("period_high_label", "기간 고가"), fmt(r["high_52w"]),
              f"-{(1 - r['current'] / r['high_52w']) * 100:.1f}%",
              MUTED),
-            ("52주 저가", fmt(r["low_52w"]),
+            (r.get("period_low_label", "기간 저가"), fmt(r["low_52w"]),
              f"+{(r['current'] / r['low_52w'] - 1) * 100:.1f}%",
              MUTED),
-            ("52주 위치", f"{pos_52w:.0f}%",
+            ("기간 위치", f"{pos_52w:.0f}%",
              "저점권" if pos_52w < 30 else
              ("고점권" if pos_52w > 70 else "중간권"),
              ACCENT if pos_52w < 30 else
@@ -1813,6 +1935,10 @@ class AssetManagerApp(tk.Tk):
                       "매매 판단은 본인 책임 하에 신중히 하세요.",
                  bg=BG, fg=MUTED, font=("Malgun Gothic", 9),
                  wraplength=950, justify="left").pack(anchor="w")
+
+        # 새로 렌더링된 모든 자손에 휠 스크롤 활성화
+        if hasattr(self, "_an_canvas"):
+            self._mark_scrollable(self.an_container, self._an_canvas)
 
     def _draw_price_bar(self, canvas, r):
         """수평 가격축에 지지선/저항선/현재가를 표시"""
@@ -2395,6 +2521,10 @@ class AssetManagerApp(tk.Tk):
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         self._habit_canvas = canvas
+        # 휠 스크롤
+        canvas._scroll_canvas = canvas
+        wrap._scroll_canvas = canvas
+        self.habit_container._scroll_canvas = canvas
 
     def add_habit(self):
         name = self.hb_name.get().strip()
@@ -2433,6 +2563,8 @@ class AssetManagerApp(tk.Tk):
         for h in habits:
             self._make_habit_card(h, today)
         self._update_godlife_summary()
+        if hasattr(self, "_habit_canvas"):
+            self._mark_scrollable(self.habit_container, self._habit_canvas)
 
     def _make_habit_card(self, habit, today):
         card = tk.Frame(self.habit_container, bg=CARD_BG, bd=0,
@@ -2556,6 +2688,11 @@ class AssetManagerApp(tk.Tk):
         self.goal_container.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        # 휠 스크롤
+        self._goal_canvas = canvas
+        canvas._scroll_canvas = canvas
+        wrap._scroll_canvas = canvas
+        self.goal_container._scroll_canvas = canvas
 
     def add_goal(self):
         title = self.gl_title.get().strip()
@@ -2599,6 +2736,8 @@ class AssetManagerApp(tk.Tk):
         for c in range(2):
             self.goal_container.columnconfigure(c, weight=1)
         self._update_godlife_summary()
+        if hasattr(self, "_goal_canvas"):
+            self._mark_scrollable(self.goal_container, self._goal_canvas)
 
     def _make_goal_card(self, goal, row, col):
         card = tk.Frame(self.goal_container, bg=CARD_BG, bd=0,
@@ -2784,6 +2923,11 @@ class AssetManagerApp(tk.Tk):
         self.news_container.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        # 휠 스크롤
+        self._news_canvas = canvas
+        canvas._scroll_canvas = canvas
+        wrap._scroll_canvas = canvas
+        self.news_container._scroll_canvas = canvas
 
     def update_news(self):
         self.news_status.config(text="뉴스 가져오는 중...")
@@ -2832,6 +2976,9 @@ class AssetManagerApp(tk.Tk):
             day_label.pack(anchor="w", padx=6, pady=(10, 4))
             for it in groups[day]:
                 self._make_news_card(it)
+
+        if hasattr(self, "_news_canvas"):
+            self._mark_scrollable(self.news_container, self._news_canvas)
 
     def _make_news_card(self, item):
         card = tk.Frame(self.news_container, bg=CARD_BG, bd=0,

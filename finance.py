@@ -1,0 +1,1000 @@
+"""
+finance.py - 금융 계산 + 주가/뉴스 조회
+"""
+from datetime import datetime, timedelta, date
+
+
+def compound_deposit(principal, annual_rate, period_months,
+                     compound_period=12, tax_rate=15.4):
+    r = annual_rate / 100.0
+    n = compound_period
+    t = period_months / 12.0
+    final = principal * ((1 + r / n) ** (n * t))
+    interest = final - principal
+    tax = interest * (tax_rate / 100.0)
+    net_interest = interest - tax
+    return {
+        "principal": principal,
+        "interest_gross": interest,
+        "tax": tax,
+        "interest_net": net_interest,
+        "total": principal + net_interest,
+    }
+
+
+def compound_savings(monthly_payment, annual_rate, period_months,
+                     compound_period=12, tax_rate=15.4):
+    r = annual_rate / 100.0
+    n = compound_period
+    total_principal = monthly_payment * period_months
+    total_value = 0.0
+    for k in range(period_months):
+        remaining_months = period_months - k
+        t = remaining_months / 12.0
+        fv = monthly_payment * ((1 + r / n) ** (n * t))
+        total_value += fv
+    interest = total_value - total_principal
+    tax = interest * (tax_rate / 100.0)
+    net_interest = interest - tax
+    return {
+        "principal": total_principal,
+        "interest_gross": interest,
+        "tax": tax,
+        "interest_net": net_interest,
+        "total": total_principal + net_interest,
+    }
+
+
+def calculate_deposit(deposit_row):
+    if deposit_row.get("deposit_type", "예금") == "적금":
+        return compound_savings(
+            deposit_row["principal"],
+            deposit_row["interest_rate"],
+            deposit_row["period_months"],
+            deposit_row.get("compound_period", 12),
+            deposit_row.get("tax_rate", 15.4),
+        )
+    return compound_deposit(
+        deposit_row["principal"],
+        deposit_row["interest_rate"],
+        deposit_row["period_months"],
+        deposit_row.get("compound_period", 12),
+        deposit_row.get("tax_rate", 15.4),
+    )
+
+
+def maturity_date(start_date_str, period_months):
+    start = datetime.strptime(start_date_str, "%Y-%m-%d")
+    month = start.month - 1 + period_months
+    year = start.year + month // 12
+    month = month % 12 + 1
+    day = min(start.day, 28)
+    return datetime(year, month, day).strftime("%Y-%m-%d")
+
+
+def current_deposit_value(deposit_row, as_of=None):
+    """
+    시작일~오늘 현재까지 실제로 누적된 원금+이자 (세전).
+    """
+    as_of = as_of or date.today()
+    if isinstance(as_of, datetime):
+        as_of = as_of.date()
+    start = datetime.strptime(deposit_row["start_date"], "%Y-%m-%d").date()
+
+    period = int(deposit_row["period_months"])
+    r = deposit_row["interest_rate"] / 100.0
+    n = int(deposit_row.get("compound_period", 12) or 12)
+    dtype = deposit_row.get("deposit_type", "예금")
+    pay = float(deposit_row["principal"])
+
+    if as_of < start:
+        if dtype == "적금":
+            principal_so_far = 0.0
+            current_value = 0.0
+        else:
+            principal_so_far = pay
+            current_value = pay
+        return {
+            "current_value": current_value,
+            "principal_so_far": principal_so_far,
+            "interest": 0.0,
+            "elapsed_months": 0,
+            "period_months": period,
+            "is_matured": False,
+            "progress_pct": 0.0,
+        }
+
+    elapsed = (as_of.year - start.year) * 12 + (as_of.month - start.month)
+    if as_of.day < start.day:
+        elapsed -= 1
+    elapsed = max(0, elapsed)
+
+    is_matured = elapsed >= period
+    eff_months = min(elapsed, period)
+
+    if dtype == "적금":
+        if is_matured:
+            total = 0.0
+            for k in range(period):
+                months_held = period - k
+                t = months_held / 12.0
+                total += pay * ((1 + r / n) ** (n * t))
+            principal_so_far = pay * period
+            current_value = total
+        else:
+            total = 0.0
+            for k in range(eff_months):
+                months_held = eff_months - k
+                t = months_held / 12.0
+                total += pay * ((1 + r / n) ** (n * t))
+            principal_so_far = pay * eff_months
+            current_value = total
+    else:
+        t = eff_months / 12.0
+        current_value = pay * ((1 + r / n) ** (n * t))
+        principal_so_far = pay
+
+    return {
+        "current_value": current_value,
+        "principal_so_far": principal_so_far,
+        "interest": current_value - principal_so_far,
+        "elapsed_months": eff_months,
+        "period_months": period,
+        "is_matured": is_matured,
+        "progress_pct": (eff_months / period * 100) if period else 0,
+    }
+
+
+def insurance_stats(ins_row, as_of=None):
+    """
+    보험 계약의 진행 상황 계산
+    """
+    as_of = as_of or date.today()
+    if isinstance(as_of, datetime):
+        as_of = as_of.date()
+    start = datetime.strptime(ins_row["start_date"], "%Y-%m-%d").date()
+    monthly = float(ins_row.get("monthly_premium") or 0)
+
+    def months_between(a, b):
+        m = (b.year - a.year) * 12 + (b.month - a.month)
+        if b.day < a.day:
+            m -= 1
+        return max(0, m)
+
+    if as_of < start:
+        months_paid = 0
+    else:
+        months_paid = months_between(start, as_of)
+
+    pay_end_str = ins_row.get("payment_end_date")
+    if pay_end_str:
+        pay_end = datetime.strptime(pay_end_str, "%Y-%m-%d").date()
+        max_months = months_between(start, pay_end)
+        months_paid = min(months_paid, max_months)
+        payment_progress = (months_paid / max_months * 100) if max_months else 0
+        payment_done = months_paid >= max_months
+        payment_months_left = max(0, max_months - months_paid)
+    else:
+        payment_progress = None
+        payment_done = False
+        payment_months_left = None
+
+    total_paid = months_paid * monthly
+
+    maturity_str = ins_row.get("maturity_date")
+    if maturity_str:
+        maturity = datetime.strptime(maturity_str, "%Y-%m-%d").date()
+        days_to_maturity = (maturity - as_of).days
+        months_to_maturity = months_between(as_of, maturity) if maturity > as_of else 0
+        is_expired = as_of > maturity
+    else:
+        days_to_maturity = None
+        months_to_maturity = None
+        is_expired = False
+
+    return {
+        "months_paid": months_paid,
+        "total_paid": total_paid,
+        "months_to_maturity": months_to_maturity,
+        "days_to_maturity": days_to_maturity,
+        "payment_progress": payment_progress,
+        "payment_done": payment_done,
+        "payment_months_left": payment_months_left,
+        "is_expired": is_expired,
+    }
+
+
+def fetch_stock_quote(ticker):
+    """
+    개선된 주가 조회: 여러 경로를 시도하고 출처/통화까지 함께 반환.
+    """
+    try:
+        import yfinance as yf
+    except Exception as e:
+        print(f"[fetch] yfinance 미설치: {e}")
+        return None
+
+    try:
+        t = yf.Ticker(ticker)
+
+        # 1) fast_info
+        try:
+            fi = t.fast_info
+            price = None
+            for key in ("last_price", "lastPrice", "regular_market_price",
+                        "regularMarketPrice"):
+                try:
+                    v = fi[key] if hasattr(fi, "__getitem__") else getattr(fi, key, None)
+                    if v and v > 0:
+                        price = float(v)
+                        break
+                except Exception:
+                    pass
+            currency = None
+            for key in ("currency",):
+                try:
+                    v = fi[key] if hasattr(fi, "__getitem__") else getattr(fi, key, None)
+                    if v:
+                        currency = str(v)
+                        break
+                except Exception:
+                    pass
+            if price:
+                return {
+                    "price": price,
+                    "currency": currency or _guess_currency(ticker),
+                    "source": "fast_info",
+                    "name": None,
+                }
+        except Exception:
+            pass
+
+        # 2) history
+        try:
+            hist = t.history(period="5d")
+            if not hist.empty:
+                price = float(hist["Close"].dropna().iloc[-1])
+                if price > 0:
+                    return {
+                        "price": price,
+                        "currency": _guess_currency(ticker),
+                        "source": "history",
+                        "name": None,
+                    }
+        except Exception:
+            pass
+
+        # 3) info
+        try:
+            info = t.info or {}
+            price = info.get("currentPrice") or info.get("regularMarketPrice")
+            if price:
+                return {
+                    "price": float(price),
+                    "currency": info.get("currency") or _guess_currency(ticker),
+                    "source": "info",
+                    "name": info.get("shortName"),
+                }
+        except Exception:
+            pass
+
+        return None
+    except Exception as e:
+        print(f"[fetch_stock_quote] {ticker} 실패: {e}")
+        return None
+
+
+def _guess_currency(ticker):
+    t = ticker.upper()
+    if t.endswith(".KS") or t.endswith(".KQ"):
+        return "KRW"
+    if t.endswith(".T"):
+        return "JPY"
+    if t.endswith(".HK"):
+        return "HKD"
+    if t.endswith(".L"):
+        return "GBP"
+    return "USD"
+
+
+def fetch_stock_name(ticker):
+    """
+    티커 → 종목명 자동 조회.
+    한국: '삼성전자', 미국: 'Apple Inc.' 등 yfinance가 제공하는 표시명.
+    실패하면 None.
+    """
+    if not ticker:
+        return None
+    try:
+        import yfinance as yf
+    except Exception as e:
+        print(f"[fetch_stock_name] yfinance 미설치: {e}")
+        return None
+
+    try:
+        t = yf.Ticker(ticker)
+
+        # 1) fast_info — 빠르고 가벼움
+        try:
+            fi = t.fast_info
+            for key in ("longName", "shortName", "name"):
+                try:
+                    v = (fi[key] if hasattr(fi, "__getitem__")
+                         else getattr(fi, key, None))
+                    if v and isinstance(v, str) and v.strip():
+                        return v.strip()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 2) info — 가장 풍부 (longName / shortName)
+        try:
+            info = t.info or {}
+            for key in ("longName", "shortName", "displayName"):
+                v = info.get(key)
+                if v and isinstance(v, str) and v.strip():
+                    return v.strip()
+        except Exception:
+            pass
+
+        # 3) get_info() (구버전 호환)
+        try:
+            info = t.get_info() if hasattr(t, "get_info") else {}
+            for key in ("longName", "shortName"):
+                v = (info or {}).get(key)
+                if v:
+                    return str(v).strip()
+        except Exception:
+            pass
+
+        return None
+    except Exception as e:
+        print(f"[fetch_stock_name] {ticker} 실패: {e}")
+        return None
+
+
+def fetch_stock_news(ticker, limit=10):
+    """yfinance Ticker.news로 종목 관련 뉴스 가져오기"""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        items = t.news or []
+        result = []
+        for it in items[:limit]:
+            content = it.get("content") or it
+            title = content.get("title")
+            if not title:
+                continue
+            pub = (content.get("provider") or {}).get("displayName") or content.get(
+                "publisher", "")
+            link = (content.get("canonicalUrl") or {}).get("url") or content.get(
+                "link", "")
+            ts = content.get("pubDate") or content.get("providerPublishTime")
+            if isinstance(ts, (int, float)):
+                ts = datetime.fromtimestamp(ts).isoformat(timespec="minutes")
+            result.append({
+                "title": title,
+                "publisher": pub,
+                "link": link,
+                "time": ts or "",
+                "ticker": ticker,
+            })
+        return result
+    except Exception as e:
+        print(f"[fetch_stock_news] {ticker} 실패: {e}")
+        return []
+
+
+# period → (yfinance period, interval) 매핑
+_ANALYSIS_PERIOD_INTERVAL = {
+    "1d": ("1d", "5m"),
+    "5d": ("5d", "30m"),
+    "1mo": ("1mo", "1h"),
+    "3mo": ("3mo", "1d"),
+    "6mo": ("6mo", "1d"),
+    "1y": ("1y", "1d"),
+    "2y": ("2y", "1d"),
+}
+
+_PERIOD_DISPLAY = {
+    "1d": "1일 (5분봉)",
+    "5d": "1주 (30분봉)",
+    "1mo": "1개월 (1시간봉)",
+    "3mo": "3개월 (일봉)",
+    "6mo": "6개월 (일봉)",
+    "1y": "1년 (일봉)",
+    "2y": "2년 (일봉)",
+}
+
+_PERIOD_HIGH_LABEL = {
+    "1d": "오늘 고가", "5d": "1주 고가",
+    "1mo": "1개월 고가", "3mo": "3개월 고가", "6mo": "6개월 고가",
+    "1y": "52주 고가", "2y": "2년 고가",
+}
+_PERIOD_LOW_LABEL = {
+    "1d": "오늘 저가", "5d": "1주 저가",
+    "1mo": "1개월 저가", "3mo": "3개월 저가", "6mo": "6개월 저가",
+    "1y": "52주 저가", "2y": "2년 저가",
+}
+_PERIOD_PEAK_LABEL = {
+    "1d": "오늘 고점", "5d": "1주 고점",
+    "1mo": "1개월 고점", "3mo": "3개월 고점", "6mo": "6개월 고점",
+    "1y": "52주 고점", "2y": "2년 고점",
+}
+_PERIOD_TROUGH_LABEL = {
+    "1d": "오늘 저점", "5d": "1주 저점",
+    "1mo": "1개월 저점", "3mo": "3개월 저점", "6mo": "6개월 저점",
+    "1y": "52주 저점", "2y": "2년 저점",
+}
+
+
+def analyze_stock(ticker, period="1y", interval=None):
+    """
+    yfinance 가격 이력 기반 기술적 분석.
+    이동평균, RSI, 볼린저밴드, 피보나치 되돌림으로
+    지지선/저항선/추천 매매구간/추세를 자동 산출.
+
+    period: '1d' | '5d' | '1mo' | '3mo' | '6mo' | '1y' | '2y'
+      - 1d: 1일 (5분봉 인트라데이)
+      - 5d: 1주 (30분봉)
+      - 1mo: 1개월 (1시간봉)
+      - 그 외: 일봉
+    interval: 명시하면 강제 사용. 없으면 period에서 자동.
+
+    반환: dict 또는 None (실패/데이터 부족 시)
+    """
+    if not ticker:
+        return None
+    try:
+        import yfinance as yf
+        import pandas as pd
+        import math
+    except Exception as e:
+        print(f"[analyze_stock] 라이브러리 미설치: {e}")
+        return None
+
+    # period → interval 자동 매핑
+    _p, _i = _ANALYSIS_PERIOD_INTERVAL.get(period, (period, "1d"))
+    if interval is None:
+        interval = _i
+    is_intraday = interval in ("1m", "2m", "5m", "15m", "30m", "1h", "60m", "90m")
+
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period=period, interval=interval)
+        if hist.empty or len(hist) < 15:
+            return None
+
+        close = hist["Close"].dropna()
+        high = hist["High"].dropna()
+        low = hist["Low"].dropna()
+        if len(close) < 20:
+            return None
+
+        def safe_last(s):
+            try:
+                v = s.iloc[-1]
+                return float(v) if not pd.isna(v) else None
+            except Exception:
+                return None
+
+        current = safe_last(close)
+        if not current or current <= 0:
+            return None
+
+        # ===== 이동평균선 =====
+        ma5 = safe_last(close.rolling(5).mean())
+        ma20 = safe_last(close.rolling(20).mean())
+        ma60 = safe_last(close.rolling(60).mean()) if len(close) >= 60 else None
+        ma120 = safe_last(close.rolling(120).mean()) if len(close) >= 120 else None
+
+        # ===== 기간별 고가/저가 =====
+        n20 = min(20, len(high))
+        n60 = min(60, len(high))
+        high_20 = float(high.tail(n20).max())
+        low_20 = float(low.tail(n20).min())
+        high_60 = float(high.tail(n60).max())
+        low_60 = float(low.tail(n60).min())
+        high_52w = float(high.max())
+        low_52w = float(low.min())
+
+        # ===== RSI(14) =====
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        last_gain = safe_last(gain) or 0.0
+        last_loss = safe_last(loss) or 0.0
+        if last_loss == 0:
+            rsi = 100.0 if last_gain > 0 else 50.0
+        else:
+            rs = last_gain / last_loss
+            rsi = 100.0 - 100.0 / (1.0 + rs)
+
+        # ===== 볼린저밴드 (MA20 ± 2σ) =====
+        std20 = safe_last(close.rolling(20).std()) or 0.0
+        bb_upper = (ma20 + 2.0 * std20) if ma20 else None
+        bb_lower = (ma20 - 2.0 * std20) if ma20 else None
+        if bb_upper and bb_lower and bb_upper > bb_lower:
+            bb_pos = (current - bb_lower) / (bb_upper - bb_lower)
+            bb_pos = max(0.0, min(1.0, bb_pos))
+        else:
+            bb_pos = 0.5
+
+        # ===== 피보나치 되돌림 (최근 60일 swing) =====
+        swing_high = high_60
+        swing_low = low_60
+        diff = swing_high - swing_low
+        if diff <= 0:
+            diff = max(swing_high * 0.01, 1.0)
+        fib_236 = swing_high - diff * 0.236
+        fib_382 = swing_high - diff * 0.382
+        fib_500 = swing_high - diff * 0.500
+        fib_618 = swing_high - diff * 0.618
+
+        # ===== 지지선 / 저항선 =====
+        # 지지선 후보: 현재가 아래쪽 가격들
+        sup_candidates = []
+        for v in (low_20, ma20, ma60, fib_500, fib_618, low_60, bb_lower):
+            if v and not math.isnan(v) and v < current and v > 0:
+                sup_candidates.append(v)
+        if sup_candidates:
+            support_near = max(sup_candidates)  # 현재가에 가장 가까운 지지선
+            support_far = min(sup_candidates)   # 더 아래 지지선
+        else:
+            support_near = current * 0.95
+            support_far = current * 0.90
+
+        # 저항선 후보: 현재가 위쪽 가격들
+        res_candidates = []
+        for v in (high_20, high_60, fib_236, fib_382, bb_upper, high_52w):
+            if v and not math.isnan(v) and v > current:
+                res_candidates.append(v)
+        if res_candidates:
+            resistance_near = min(res_candidates)
+            resistance_far = max(res_candidates)
+        else:
+            resistance_near = current * 1.05
+            resistance_far = current * 1.10
+
+        # ===== 추천 매매 구간 =====
+        # 매수 구간: support_far ~ support_near (가까운 지지선에서 1차, 약한 지지선에서 2차)
+        buy_zone_low = support_far
+        buy_zone_high = support_near
+        sell_zone_low = resistance_near
+        sell_zone_high = resistance_far
+        stop_loss = support_far * 0.97  # 약한 지지선보다 3% 아래
+
+        # ===== 추세 판단 =====
+        if ma60 and ma20 and current > ma20 > ma60:
+            trend = "📈 상승 추세"
+            trend_color = "accent"
+        elif ma60 and ma20 and current < ma20 < ma60:
+            trend = "📉 하락 추세"
+            trend_color = "danger"
+        elif ma20 and current > ma20:
+            trend = "↗ 단기 상승"
+            trend_color = "accent"
+        elif ma20 and current < ma20:
+            trend = "↘ 단기 하락"
+            trend_color = "danger"
+        else:
+            trend = "→ 횡보"
+            trend_color = "muted"
+
+        # ===== 종합 신호 =====
+        signals = []
+        if rsi < 30:
+            signals.append(("🟢", f"RSI {rsi:.1f} — 과매도 구간, 단기 반등 가능성 ↑"))
+        elif rsi > 70:
+            signals.append(("🔴", f"RSI {rsi:.1f} — 과매수 구간, 단기 조정 위험 ↑"))
+        else:
+            signals.append(("⚪", f"RSI {rsi:.1f} — 중립 구간"))
+
+        if bb_pos < 0.2:
+            signals.append(("🟢", f"볼린저밴드 하단 근접 ({bb_pos * 100:.0f}%) "
+                                  f"— 평균 회귀 매수 시점 가능"))
+        elif bb_pos > 0.8:
+            signals.append(("🔴", f"볼린저밴드 상단 근접 ({bb_pos * 100:.0f}%) "
+                                  f"— 평균 회귀 조정 가능"))
+        else:
+            signals.append(("⚪", f"볼린저밴드 중앙 부근 ({bb_pos * 100:.0f}%)"))
+
+        if ma20:
+            if current > ma20:
+                signals.append(("🟢", f"20일선({_fmt_num(ma20)}) 위 — 단기 강세"))
+            else:
+                signals.append(("🔴", f"20일선({_fmt_num(ma20)}) 아래 — 단기 약세"))
+        if ma60:
+            if current > ma60:
+                signals.append(("🟢", f"60일선({_fmt_num(ma60)}) 위 — 중기 강세"))
+            else:
+                signals.append(("🔴", f"60일선({_fmt_num(ma60)}) 아래 — 중기 약세"))
+
+        # 기간 위치 (구 '52주' 명칭 → period 기반)
+        peak_label = _PERIOD_PEAK_LABEL.get(period, "기간 고점")
+        trough_label = _PERIOD_TROUGH_LABEL.get(period, "기간 저점")
+        rng = high_52w - low_52w
+        if rng > 0:
+            pos_52w = (current - low_52w) / rng * 100
+            if pos_52w < 25:
+                signals.append(("🟢", f"{trough_label} 부근 (저점 +{pos_52w:.0f}%) "
+                                      f"— 저가 매수 관점 검토"))
+            elif pos_52w > 75:
+                signals.append(("🔴", f"{peak_label} 부근 (저점 +{pos_52w:.0f}%) "
+                                      f"— 신규 진입 부담"))
+
+        # ===== 스코어로 추천 코멘트 (신중·실용형) =====
+        score = 0.0
+        if rsi < 30:
+            score += 2
+        elif rsi < 40:
+            score += 1
+        elif rsi > 70:
+            score -= 2
+        elif rsi > 60:
+            score -= 1
+
+        if bb_pos < 0.2:
+            score += 1.5
+        elif bb_pos < 0.35:
+            score += 0.5
+        elif bb_pos > 0.8:
+            score -= 1.5
+        elif bb_pos > 0.65:
+            score -= 0.5
+
+        if ma20:
+            score += 0.5 if current > ma20 else -0.5
+        if ma60:
+            score += 0.5 if current > ma60 else -0.5
+
+        if rng > 0:
+            pos_52w = (current - low_52w) / rng
+            if pos_52w < 0.25:
+                score += 1
+            elif pos_52w > 0.85:
+                score -= 1
+
+        # 신중·실용형 코멘트
+        if score >= 2.5:
+            verdict = "🟢 매수 관심 구간"
+            verdict_detail = (
+                "여러 지표가 매수에 우호적입니다. 추천 매수가 구간에서 "
+                "분할매수(1차 30% / 2차 30% / 3차 40%)를 고려해보세요. "
+                "단, 손절선 아래로 빠지면 손실 확정 후 재진입 검토."
+            )
+            verdict_kind = "buy"
+        elif score >= 1:
+            verdict = "🟡 분할 매수 / 관심 권장"
+            verdict_detail = (
+                "긍정 신호가 우세하지만 결정적이지는 않습니다. "
+                "추천 매수가 구간(지지선)에 가까워질 때 소량 분할매수 고려. "
+                "결과에 베팅하지 말고 평균단가를 낮추는 전략."
+            )
+            verdict_kind = "buy_soft"
+        elif score >= -1:
+            verdict = "🟡 관망 권장"
+            verdict_detail = (
+                "신호가 혼재되어 있습니다. 추세 명확화 전까지 "
+                "신규 진입은 보류하고, 지지선 접근/저항선 돌파 신호 확인 후 결정."
+            )
+            verdict_kind = "watch"
+        elif score >= -2.5:
+            verdict = "🟠 진입 자제 / 보유분 점검"
+            verdict_detail = (
+                "단기 조정 신호가 우세합니다. 신규 매수보다는 "
+                "보유분의 매도 추천 구간 도달 여부 점검을 권장."
+            )
+            verdict_kind = "watch_neg"
+        else:
+            verdict = "🔴 매도 관심 / 진입 자제"
+            verdict_detail = (
+                "다수 지표가 과열·하락 신호를 보입니다. 신규 진입 부담이 크고, "
+                "보유분은 매도 추천 구간 도달 시 일부 차익실현 검토."
+            )
+            verdict_kind = "sell"
+
+        # ===== 단기 모멘텀 예측 (참고용) =====
+        recent_ret = close.pct_change().tail(20).mean()
+        if recent_ret is not None and not pd.isna(recent_ret):
+            forecast_20d = current * (1.0 + float(recent_ret) * 20)
+        else:
+            forecast_20d = current
+
+        # ===== 미니 차트용: 최근 60일 종가 + 날짜 =====
+        recent = close.tail(60)
+        recent_closes = [float(v) for v in recent.values]
+        try:
+            recent_dates = [d.strftime("%Y-%m-%d") for d in recent.index]
+        except Exception:
+            recent_dates = []
+
+        # 통화 추정
+        currency = _guess_currency(ticker)
+
+        return {
+            "ticker": ticker.upper(),
+            "currency": currency,
+            "period": period,
+            "interval": interval,
+            "is_intraday": is_intraday,
+            "period_display": _PERIOD_DISPLAY.get(period, period),
+            "period_high_label": _PERIOD_HIGH_LABEL.get(period, "기간 고가"),
+            "period_low_label": _PERIOD_LOW_LABEL.get(period, "기간 저가"),
+            "period_high": high_52w,
+            "period_low": low_52w,
+            "current": current,
+            "ma5": ma5, "ma20": ma20, "ma60": ma60, "ma120": ma120,
+            "high_20": high_20, "low_20": low_20,
+            "high_60": high_60, "low_60": low_60,
+            "high_52w": high_52w, "low_52w": low_52w,
+            "rsi": rsi,
+            "bb_upper": bb_upper, "bb_lower": bb_lower, "bb_pos": bb_pos,
+            "fib_236": fib_236, "fib_382": fib_382,
+            "fib_500": fib_500, "fib_618": fib_618,
+            "support_near": support_near,
+            "support_far": support_far,
+            "resistance_near": resistance_near,
+            "resistance_far": resistance_far,
+            "buy_zone_low": buy_zone_low,
+            "buy_zone_high": buy_zone_high,
+            "sell_zone_low": sell_zone_low,
+            "sell_zone_high": sell_zone_high,
+            "stop_loss": stop_loss,
+            "trend": trend,
+            "trend_color": trend_color,
+            "signals": signals,
+            "verdict": verdict,
+            "verdict_detail": verdict_detail,
+            "verdict_kind": verdict_kind,
+            "score": round(score, 2),
+            "forecast_20d": forecast_20d,
+            "recent_closes": recent_closes,
+            "recent_dates": recent_dates,
+            "data_points": len(close),
+        }
+    except Exception as e:
+        print(f"[analyze_stock] {ticker} 실패: {e}")
+        return None
+
+
+def _fmt_num(n):
+    """내부용 - 종목명 코멘트에 들어가는 숫자 포맷"""
+    try:
+        if abs(n) >= 1000:
+            return f"{n:,.0f}"
+        return f"{n:,.2f}"
+    except Exception:
+        return str(n)
+
+
+# ==================== 뉴스 Sentiment ====================
+
+# 헤드라인 sentiment 키워드 (한글 + 영문)
+_SENT_POS = [
+    # 한글 - 강한 긍정
+    "호실적", "사상최고", "사상 최고", "사상 최대", "사상최대",
+    "어닝 서프라이즈", "어닝서프라이즈", "신고가", "상한가",
+    "흑자전환", "흑자 전환", "최대 실적", "최대실적",
+    "강력추천", "강력 추천", "매수 추천", "매수추천",
+    # 한글 - 일반 긍정
+    "상승", "급등", "강세", "호재", "수주", "계약 체결", "계약체결",
+    "공급 계약", "공급계약", "특허", "신제품", "신규 투자", "신규투자",
+    "증익", "영업이익 증가", "영업이익증가", "매출 증가", "매출증가",
+    "성장", "도약", "확장", "혁신", "유망", "긍정적", "우호적",
+    "수출 호조", "수출호조", "환율 수혜", "환율수혜", "수혜",
+    "신규 설비", "신규설비", "투자 확대", "투자확대",
+    # 영문
+    "beat", "surge", "soar", "rally", "growth", "record high", "record-high",
+    "strong", "outperform", "buy", "upgrade", "bullish", "gains",
+    "expansion", "milestone", "breakthrough",
+]
+
+_SENT_NEG = [
+    # 한글 - 강한 부정
+    "어닝 쇼크", "어닝쇼크", "신저가", "하한가", "적자전환", "적자 전환",
+    "분식회계", "분식 회계", "횡령", "압수수색", "압수 수색",
+    "파산", "부도", "상장폐지", "상장 폐지",
+    "매도 추천", "매도추천", "강력매도", "강력 매도",
+    # 한글 - 일반 부정
+    "하락", "급락", "약세", "악재", "감익", "적자", "손실",
+    "감소", "둔화", "부진", "위기", "리스크", "부정적",
+    "우려", "조정", "리콜", "소송", "벌금", "과징금",
+    "영업손실", "영업 손실", "매출 감소", "매출감소",
+    "감원", "구조조정", "구조 조정", "타격", "쇼크",
+    # 영문
+    "drop", "plunge", "slump", "miss", "downgrade", "sell-off", "selloff",
+    "concern", "weak", "decline", "loss", "bearish", "warning",
+    "lawsuit", "fine", "scandal", "recall", "fraud",
+]
+
+
+def analyze_news_sentiment(ticker, limit=15):
+    """
+    티커 관련 뉴스 가져와서 헤드라인 sentiment 분석.
+    반환:
+      {
+        "news": [{"title", "publisher", "link", "time", "score", "sentiment"}],
+        "count", "avg_score",
+        "positive", "negative", "neutral",
+        "overall", "overall_color"
+      }
+    실패 시 None.
+    """
+    items = fetch_stock_news(ticker, limit=limit) or []
+    if not items:
+        return None
+
+    pos_kw = [k.lower() for k in _SENT_POS]
+    neg_kw = [k.lower() for k in _SENT_NEG]
+
+    total = 0
+    pos_n = neg_n = neu_n = 0
+    enriched = []
+    for it in items:
+        title = (it.get("title") or "").strip()
+        if not title:
+            continue
+        tl = title.lower()
+        score = 0
+        for kw in pos_kw:
+            if kw in tl:
+                score += 1
+        for kw in neg_kw:
+            if kw in tl:
+                score -= 1
+        if score > 0:
+            label = "🟢 긍정"
+            pos_n += 1
+        elif score < 0:
+            label = "🔴 부정"
+            neg_n += 1
+        else:
+            label = "⚪ 중립"
+            neu_n += 1
+        total += score
+        enriched.append({
+            **it,
+            "score": score,
+            "sentiment": label,
+        })
+
+    n = len(enriched)
+    if n == 0:
+        return None
+    avg = total / n
+    if avg > 0.3:
+        overall = "🟢 전반적으로 긍정적"
+        overall_color = "accent"
+    elif avg < -0.3:
+        overall = "🔴 전반적으로 부정적"
+        overall_color = "danger"
+    else:
+        overall = "⚪ 중립적 (혼재)"
+        overall_color = "muted"
+
+    return {
+        "news": enriched,
+        "count": n,
+        "avg_score": round(avg, 2),
+        "positive": pos_n,
+        "negative": neg_n,
+        "neutral": neu_n,
+        "overall": overall,
+        "overall_color": overall_color,
+    }
+
+
+# ==================== 기업 정보 스냅샷 ====================
+
+def fetch_company_snapshot(ticker):
+    """
+    yfinance.info에서 기업 핵심 정보 추출.
+    Korean stocks(.KS/.KQ)은 일부 필드가 비어있을 수 있음.
+    """
+    if not ticker:
+        return None
+    try:
+        import yfinance as yf
+    except Exception:
+        return None
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info or {}
+        if not info:
+            return None
+
+        def g(*keys):
+            for k in keys:
+                v = info.get(k)
+                if v is not None and v != "":
+                    return v
+            return None
+
+        return {
+            "long_name": g("longName", "shortName", "displayName"),
+            "sector": g("sector"),
+            "industry": g("industry"),
+            "country": g("country"),
+            "website": g("website"),
+            "currency": g("currency") or _guess_currency(ticker),
+            "market_cap": g("marketCap"),
+            "enterprise_value": g("enterpriseValue"),
+            "pe": g("trailingPE"),
+            "forward_pe": g("forwardPE"),
+            "peg": g("pegRatio"),
+            "pbr": g("priceToBook"),
+            "psr": g("priceToSalesTrailing12Months"),
+            "dividend_yield": g("dividendYield"),
+            "dividend_rate": g("dividendRate"),
+            "payout_ratio": g("payoutRatio"),
+            "beta": g("beta"),
+            "fifty_two_week_high": g("fiftyTwoWeekHigh"),
+            "fifty_two_week_low": g("fiftyTwoWeekLow"),
+            "earnings_growth": g("earningsGrowth", "earningsQuarterlyGrowth"),
+            "revenue_growth": g("revenueGrowth"),
+            "profit_margin": g("profitMargins"),
+            "operating_margin": g("operatingMargins"),
+            "roe": g("returnOnEquity"),
+            "roa": g("returnOnAssets"),
+            "debt_to_equity": g("debtToEquity"),
+            "employees": g("fullTimeEmployees"),
+            "business_summary": g("longBusinessSummary"),
+            # 애널리스트 데이터
+            "target_mean_price": g("targetMeanPrice"),
+            "target_high_price": g("targetHighPrice"),
+            "target_low_price": g("targetLowPrice"),
+            "recommendation_key": g("recommendationKey"),
+            "recommendation_mean": g("recommendationMean"),
+            "number_of_analyst_opinions": g("numberOfAnalystOpinions"),
+        }
+    except Exception as e:
+        print(f"[fetch_company_snapshot] {ticker} 실패: {e}")
+        return None
+
+
+def _interpret_analyst_recommendation(snap):
+    """
+    recommendation_key / recommendation_mean에서 한글 해석 반환.
+    mean: 1=strong_buy, 2=buy, 3=hold, 4=sell, 5=strong_sell
+    """
+    if not snap:
+        return None
+    key = (snap.get("recommendation_key") or "").lower()
+    mean = snap.get("recommendation_mean")
+    n_opin = snap.get("number_of_analyst_opinions")
+
+    label_map = {
+        "strong_buy": ("🟢 적극 매수", "accent"),
+        "buy": ("🟢 매수", "accent"),
+        "hold": ("🟡 보유 (중립)", "muted"),
+        "underperform": ("🟠 매도 의견 우세", "warn"),
+        "sell": ("🔴 매도", "danger"),
+        "strong_sell": ("🔴 적극 매도", "danger"),
+    }
+    label, color = label_map.get(key, ("⚪ 정보 없음", "muted"))
+
+    # mean으로 백업 해석
+    if mean is not None and not key:
+        try:
+            m = float(mean)
+            if m <= 1.5:
+                label, color = "🟢 적극 매수", "accent"
+            elif m <= 2.5:
+                label, color = "🟢 매수", "accent"
+            elif m <= 3.5:
+                label, color = "🟡 보유", "muted"
+            elif m <= 4.5:
+                label, color = "🟠 매도", "warn"
+            else:
+                label, color = "🔴 적극 매도", "danger"
+        except Exception:
+            pass
+
+    return {
+        "label": label,
+        "color": color,
+        "mean": mean,
+        "count": n_opin,
+    }

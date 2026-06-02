@@ -297,6 +297,19 @@ class Database:
             result[r["type"]] = r["total"] or 0
         return result
 
+    def get_category_summary(self, year, month, type_):
+        """월별 카테고리 합계 — [(category, total)] 내림차순"""
+        conn = self.get_connection()
+        prefix = f"{year:04d}-{month:02d}"
+        rows = conn.execute("""
+            SELECT category, SUM(amount) as total FROM transactions
+            WHERE date LIKE ? AND type=?
+            GROUP BY category
+            ORDER BY total DESC
+        """, (prefix + "%", type_)).fetchall()
+        conn.close()
+        return [(r["category"], r["total"] or 0) for r in rows]
+
     # ===== 적금/예금 =====
     def add_deposit(self, name, deposit_type, principal, interest_rate,
                     period_months, start_date, tax_rate=15.4, compound_period=12, memo=""):
@@ -324,14 +337,43 @@ class Database:
 
     # ===== 주식 =====
     def add_stock(self, ticker, name, quantity, avg_price, currency="KRW", memo=""):
+        """
+        같은 티커가 이미 있으면 수량·평균단가를 가중평균으로 자동 병합.
+        반환값: ("merged", id, old_qty, old_avg, new_qty, new_avg) 또는
+                ("created", id, 0, 0, quantity, avg_price)
+        """
+        ticker_u = (ticker or "").strip().upper()
         conn = self.get_connection()
-        conn.execute("""
+        existing = conn.execute(
+            "SELECT * FROM stocks WHERE UPPER(ticker)=?", (ticker_u,)
+        ).fetchone()
+        if existing:
+            old_qty = float(existing["quantity"] or 0)
+            old_avg = float(existing["avg_price"] or 0)
+            new_total_qty = old_qty + float(quantity)
+            if new_total_qty > 0:
+                new_avg = (old_qty * old_avg + float(quantity) * float(avg_price)) / new_total_qty
+            else:
+                new_avg = float(avg_price)
+            new_name = existing["name"] or name
+            new_memo = existing["memo"] or memo
+            conn.execute(
+                "UPDATE stocks SET quantity=?, avg_price=?, name=?, memo=? WHERE id=?",
+                (new_total_qty, new_avg, new_name, new_memo, existing["id"])
+            )
+            conn.commit()
+            conn.close()
+            return ("merged", existing["id"], old_qty, old_avg,
+                    new_total_qty, new_avg)
+        cur = conn.execute("""
             INSERT INTO stocks (ticker, name, quantity, avg_price, current_price,
                                 currency, price_source, memo)
             VALUES (?,?,?,?,?,?,?,?)
-        """, (ticker, name, quantity, avg_price, avg_price, currency, "manual", memo))
+        """, (ticker_u, name, quantity, avg_price, avg_price, currency, "manual", memo))
+        new_id = cur.lastrowid
         conn.commit()
         conn.close()
+        return ("created", new_id, 0, 0, float(quantity), float(avg_price))
 
     def get_stocks(self):
         conn = self.get_connection()

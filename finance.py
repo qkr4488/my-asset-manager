@@ -386,13 +386,62 @@ def fetch_stock_news(ticker, limit=10):
         return []
 
 
-def analyze_stock(ticker, period="1y"):
+# period → (yfinance period, interval) 매핑
+_ANALYSIS_PERIOD_INTERVAL = {
+    "1d": ("1d", "5m"),
+    "5d": ("5d", "30m"),
+    "1mo": ("1mo", "1h"),
+    "3mo": ("3mo", "1d"),
+    "6mo": ("6mo", "1d"),
+    "1y": ("1y", "1d"),
+    "2y": ("2y", "1d"),
+}
+
+_PERIOD_DISPLAY = {
+    "1d": "1일 (5분봉)",
+    "5d": "1주 (30분봉)",
+    "1mo": "1개월 (1시간봉)",
+    "3mo": "3개월 (일봉)",
+    "6mo": "6개월 (일봉)",
+    "1y": "1년 (일봉)",
+    "2y": "2년 (일봉)",
+}
+
+_PERIOD_HIGH_LABEL = {
+    "1d": "오늘 고가", "5d": "1주 고가",
+    "1mo": "1개월 고가", "3mo": "3개월 고가", "6mo": "6개월 고가",
+    "1y": "52주 고가", "2y": "2년 고가",
+}
+_PERIOD_LOW_LABEL = {
+    "1d": "오늘 저가", "5d": "1주 저가",
+    "1mo": "1개월 저가", "3mo": "3개월 저가", "6mo": "6개월 저가",
+    "1y": "52주 저가", "2y": "2년 저가",
+}
+_PERIOD_PEAK_LABEL = {
+    "1d": "오늘 고점", "5d": "1주 고점",
+    "1mo": "1개월 고점", "3mo": "3개월 고점", "6mo": "6개월 고점",
+    "1y": "52주 고점", "2y": "2년 고점",
+}
+_PERIOD_TROUGH_LABEL = {
+    "1d": "오늘 저점", "5d": "1주 저점",
+    "1mo": "1개월 저점", "3mo": "3개월 저점", "6mo": "6개월 저점",
+    "1y": "52주 저점", "2y": "2년 저점",
+}
+
+
+def analyze_stock(ticker, period="1y", interval=None):
     """
     yfinance 가격 이력 기반 기술적 분석.
     이동평균, RSI, 볼린저밴드, 피보나치 되돌림으로
     지지선/저항선/추천 매매구간/추세를 자동 산출.
 
-    period: '3mo' | '6mo' | '1y' | '2y'
+    period: '1d' | '5d' | '1mo' | '3mo' | '6mo' | '1y' | '2y'
+      - 1d: 1일 (5분봉 인트라데이)
+      - 5d: 1주 (30분봉)
+      - 1mo: 1개월 (1시간봉)
+      - 그 외: 일봉
+    interval: 명시하면 강제 사용. 없으면 period에서 자동.
+
     반환: dict 또는 None (실패/데이터 부족 시)
     """
     if not ticker:
@@ -405,10 +454,16 @@ def analyze_stock(ticker, period="1y"):
         print(f"[analyze_stock] 라이브러리 미설치: {e}")
         return None
 
+    # period → interval 자동 매핑
+    _p, _i = _ANALYSIS_PERIOD_INTERVAL.get(period, (period, "1d"))
+    if interval is None:
+        interval = _i
+    is_intraday = interval in ("1m", "2m", "5m", "15m", "30m", "1h", "60m", "90m")
+
     try:
         t = yf.Ticker(ticker)
-        hist = t.history(period=period)
-        if hist.empty or len(hist) < 20:
+        hist = t.history(period=period, interval=interval)
+        if hist.empty or len(hist) < 15:
             return None
 
         close = hist["Close"].dropna()
@@ -556,15 +611,17 @@ def analyze_stock(ticker, period="1y"):
             else:
                 signals.append(("🔴", f"60일선({_fmt_num(ma60)}) 아래 — 중기 약세"))
 
-        # 52주 위치
+        # 기간 위치 (구 '52주' 명칭 → period 기반)
+        peak_label = _PERIOD_PEAK_LABEL.get(period, "기간 고점")
+        trough_label = _PERIOD_TROUGH_LABEL.get(period, "기간 저점")
         rng = high_52w - low_52w
         if rng > 0:
             pos_52w = (current - low_52w) / rng * 100
             if pos_52w < 25:
-                signals.append(("🟢", f"52주 저점 부근 (저점 +{pos_52w:.0f}%) "
+                signals.append(("🟢", f"{trough_label} 부근 (저점 +{pos_52w:.0f}%) "
                                       f"— 저가 매수 관점 검토"))
             elif pos_52w > 75:
-                signals.append(("🔴", f"52주 고점 부근 (저점 +{pos_52w:.0f}%) "
+                signals.append(("🔴", f"{peak_label} 부근 (저점 +{pos_52w:.0f}%) "
                                       f"— 신규 진입 부담"))
 
         # ===== 스코어로 추천 코멘트 (신중·실용형) =====
@@ -660,6 +717,13 @@ def analyze_stock(ticker, period="1y"):
             "ticker": ticker.upper(),
             "currency": currency,
             "period": period,
+            "interval": interval,
+            "is_intraday": is_intraday,
+            "period_display": _PERIOD_DISPLAY.get(period, period),
+            "period_high_label": _PERIOD_HIGH_LABEL.get(period, "기간 고가"),
+            "period_low_label": _PERIOD_LOW_LABEL.get(period, "기간 저가"),
+            "period_high": high_52w,
+            "period_low": low_52w,
             "current": current,
             "ma5": ma5, "ma20": ma20, "ma60": ma60, "ma120": ma120,
             "high_20": high_20, "low_20": low_20,

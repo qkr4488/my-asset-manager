@@ -14,6 +14,8 @@ from finance import (
     compound_deposit, compound_savings, calculate_deposit,
     maturity_date, fetch_stock_quote, fetch_stock_news,
     fetch_stock_name, analyze_stock,
+    analyze_news_sentiment, fetch_company_snapshot,
+    _interpret_analyst_recommendation,
     current_deposit_value, insurance_stats,
 )
 
@@ -1542,10 +1544,11 @@ class AssetManagerApp(tk.Tk):
                    command=self.show_ticker_examples).pack(side="right")
 
         tk.Label(frame,
-                 text="💡 yfinance 가격 이력 기반 기술적 분석 — 지지선·저항선·"
-                      "추천 매매구간을 자동 산출합니다. "
-                      "지표: MA(5/20/60/120) · RSI · 볼린저밴드 · 피보나치 되돌림 · 52주 고저점. "
-                      "최종 매매 판단은 본인 책임 ⚠️",
+                 text="💡 종합 분석: ①기술적 지표(MA·RSI·볼린저·피보나치 → 지지/저항선) "
+                      "②기업 정보(시총·PER·PBR·배당·ROE) "
+                      "③애널리스트 컨센서스(목표주가·매수의견) "
+                      "④뉴스 헤드라인 sentiment(긍정/부정/중립). "
+                      "한국 사설 정보(찌라시)는 API 접근 불가. 최종 판단은 본인 책임 ⚠️",
                  bg=BG, fg=MUTED, font=("Malgun Gothic", 9),
                  wraplength=1000, justify="left").pack(
             anchor="w", padx=20, pady=(0, 6))
@@ -1623,13 +1626,19 @@ class AssetManagerApp(tk.Tk):
         period = ANALYSIS_PERIOD_MAP.get(period_disp, "1y")
         self.an_status.config(
             text=f"⏳ {ticker} 분석 중... "
-                 f"(yfinance에서 {period_disp} 가격 이력 가져오는 중)")
+                 f"({period_disp} 차트 + 기업정보 + 뉴스 sentiment 가져오는 중)")
         # 이전 결과 지우기
         for w in self.an_container.winfo_children():
             w.destroy()
-        tk.Label(self.an_container, text="🔄 분석 중입니다...",
+        tk.Label(self.an_container,
+                 text="🔄 분석 중입니다... (보통 5~15초)\n\n"
+                      "  • 기술적 지표 계산\n"
+                      "  • 기업 정보 (시총/PER/PBR/배당)\n"
+                      "  • 애널리스트 컨센서스\n"
+                      "  • 최근 뉴스 + Sentiment 분석",
                  bg=BG, fg=MUTED,
-                 font=("Malgun Gothic", 11)).pack(pady=40)
+                 font=("Malgun Gothic", 11),
+                 justify="left").pack(pady=40, padx=40, anchor="w")
         self.update_idletasks()
 
         def worker():
@@ -1642,6 +1651,27 @@ class AssetManagerApp(tk.Tk):
             except Exception as ex:
                 print(f"[analyze] {ticker} 오류: {ex}")
                 result = None
+
+            # 종합 분석: 뉴스 sentiment + 기업 스냅샷 (실패해도 무시)
+            sentiment = None
+            snapshot = None
+            try:
+                sentiment = analyze_news_sentiment(ticker, limit=15)
+            except Exception as ex:
+                print(f"[sentiment] {ticker} 오류: {ex}")
+            try:
+                snapshot = fetch_company_snapshot(ticker)
+            except Exception as ex:
+                print(f"[snapshot] {ticker} 오류: {ex}")
+
+            # result에 합치기
+            if result is not None:
+                result["_sentiment"] = sentiment
+                result["_snapshot"] = snapshot
+                # verdict 보강: sentiment 점수 반영
+                if sentiment and sentiment.get("avg_score") is not None:
+                    extra = float(sentiment["avg_score"]) * 1.5
+                    result["score"] = round(result.get("score", 0) + extra, 2)
 
             def done():
                 if not result:
@@ -1925,20 +1955,286 @@ class AssetManagerApp(tk.Tk):
 
         tk.Label(sig_card, text=" ", bg=CARD_BG).pack(pady=4)
 
+        # ===== 7. 기업 정보 스냅샷 =====
+        snap = r.get("_snapshot")
+        if snap:
+            self._render_company_snapshot(snap, currency, fmt)
+
+        # ===== 8. 애널리스트 의견 =====
+        if snap:
+            self._render_analyst_view(snap, r["current"], currency, fmt)
+
+        # ===== 9. 뉴스 sentiment =====
+        sentiment = r.get("_sentiment")
+        if sentiment:
+            self._render_news_sentiment(sentiment)
+
         # ===== 면책 =====
         disc = tk.Frame(self.an_container, bg=BG)
         disc.pack(fill="x", padx=4, pady=(6, 20))
         tk.Label(disc,
-                 text="⚠️ 본 분석은 yfinance 가격 이력에서 자동 계산한 "
-                      "기술적 지표일 뿐이며 투자 자문이 아닙니다. "
-                      "기업 펀더멘털·뉴스·시장 분위기는 반영되지 않습니다. "
-                      "매매 판단은 본인 책임 하에 신중히 하세요.",
+                 text="⚠️ 본 분석은 yfinance 공개 데이터에서 자동 계산한 결과이며 "
+                      "투자 자문이 아닙니다. 한국 사설 정보(찌라시/유료 리포트)는 "
+                      "포함되지 않습니다. 매매 판단은 본인 책임 하에 신중히 하세요.",
                  bg=BG, fg=MUTED, font=("Malgun Gothic", 9),
                  wraplength=950, justify="left").pack(anchor="w")
 
         # 새로 렌더링된 모든 자손에 휠 스크롤 활성화
         if hasattr(self, "_an_canvas"):
             self._mark_scrollable(self.an_container, self._an_canvas)
+
+    # ---- 기업 스냅샷 카드 ----
+    def _render_company_snapshot(self, snap, currency, fmt):
+        card = tk.Frame(self.an_container, bg=CARD_BG, bd=0,
+                        highlightthickness=1, highlightbackground=SOFT)
+        card.pack(fill="x", padx=4, pady=6)
+        tk.Label(card, text="🏢 기업 정보 스냅샷", bg=CARD_BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 13, "bold")).pack(
+            anchor="w", padx=18, pady=(14, 6))
+
+        # 이름/섹터
+        if snap.get("long_name"):
+            sub = []
+            if snap.get("sector"):
+                sub.append(snap["sector"])
+            if snap.get("industry"):
+                sub.append(snap["industry"])
+            if snap.get("country"):
+                sub.append(snap["country"])
+            sub_text = " · ".join(sub) if sub else ""
+            head = tk.Frame(card, bg=CARD_BG)
+            head.pack(fill="x", padx=18, pady=(0, 6))
+            tk.Label(head, text=snap["long_name"], bg=CARD_BG, fg=FG,
+                     font=("Malgun Gothic", 12, "bold")).pack(anchor="w")
+            if sub_text:
+                tk.Label(head, text=sub_text, bg=CARD_BG, fg=MUTED,
+                         font=("Malgun Gothic", 9)).pack(anchor="w")
+
+        # 핵심 지표 그리드 (4열)
+        ig = tk.Frame(card, bg=CARD_BG)
+        ig.pack(fill="x", padx=14, pady=(0, 8))
+
+        def fmt_mc(v):
+            if not v:
+                return "-"
+            if v >= 1e12:
+                return f"{v/1e12:.2f}조"
+            if v >= 1e8:
+                return f"{v/1e8:.1f}억"
+            if v >= 1e4:
+                return f"{v/1e4:.0f}만"
+            return f"{v:,.0f}"
+
+        def fmt_pct(v):
+            if v is None:
+                return "-"
+            try:
+                return f"{float(v) * 100:.2f}%"
+            except Exception:
+                return str(v)
+
+        def fmt_num(v):
+            if v is None:
+                return "-"
+            try:
+                return f"{float(v):.2f}"
+            except Exception:
+                return str(v)
+
+        items = [
+            ("시가총액", fmt_mc(snap.get("market_cap")) +
+             (currency if snap.get("market_cap") else "")),
+            ("PER (TTM)", fmt_num(snap.get("pe"))),
+            ("선행 PER", fmt_num(snap.get("forward_pe"))),
+            ("PBR", fmt_num(snap.get("pbr"))),
+            ("배당수익률", fmt_pct(snap.get("dividend_yield"))),
+            ("베타", fmt_num(snap.get("beta"))),
+            ("ROE", fmt_pct(snap.get("roe"))),
+            ("영업이익률", fmt_pct(snap.get("operating_margin"))),
+            ("매출 성장률", fmt_pct(snap.get("revenue_growth"))),
+            ("이익 성장률", fmt_pct(snap.get("earnings_growth"))),
+            ("부채비율", fmt_num(snap.get("debt_to_equity"))),
+            ("직원 수",
+             f"{snap.get('employees'):,}" if snap.get("employees") else "-"),
+        ]
+        for i, (lbl, val) in enumerate(items):
+            row, col = i // 4, i % 4
+            box = tk.Frame(ig, bg=SOFT,
+                           highlightthickness=1, highlightbackground="#e3e8f0")
+            box.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
+            tk.Label(box, text=lbl, bg=SOFT, fg=MUTED,
+                     font=("Malgun Gothic", 9)).pack(
+                anchor="w", padx=10, pady=(6, 0))
+            tk.Label(box, text=val, bg=SOFT, fg=FG,
+                     font=("Malgun Gothic", 11, "bold")).pack(
+                anchor="w", padx=10, pady=(0, 6))
+        for c in range(4):
+            ig.columnconfigure(c, weight=1)
+
+        # 기업 설명
+        bs = snap.get("business_summary")
+        if bs:
+            summary_frame = tk.Frame(card, bg=CARD_BG)
+            summary_frame.pack(fill="x", padx=18, pady=(4, 14))
+            tk.Label(summary_frame, text="📝 사업 개요", bg=CARD_BG, fg=PRIMARY,
+                     font=("Malgun Gothic", 10, "bold")).pack(anchor="w")
+            # 너무 길면 자름
+            if len(bs) > 600:
+                bs = bs[:600] + "…"
+            tk.Label(summary_frame, text=bs, bg=CARD_BG, fg=FG,
+                     font=("Malgun Gothic", 9),
+                     wraplength=920, justify="left").pack(anchor="w",
+                                                           pady=(4, 0))
+
+    # ---- 애널리스트 카드 ----
+    def _render_analyst_view(self, snap, current_price, currency, fmt):
+        # 데이터가 있는지 확인
+        tgt = snap.get("target_mean_price")
+        n_op = snap.get("number_of_analyst_opinions")
+        if not tgt and not n_op:
+            return  # 데이터 없으면 카드 자체를 안 그림
+
+        card = tk.Frame(self.an_container, bg=CARD_BG, bd=0,
+                        highlightthickness=1, highlightbackground=SOFT)
+        card.pack(fill="x", padx=4, pady=6)
+        tk.Label(card, text="👨‍💼 애널리스트 컨센서스", bg=CARD_BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 13, "bold")).pack(
+            anchor="w", padx=18, pady=(14, 6))
+
+        # 추천 의견
+        rec = _interpret_analyst_recommendation(snap)
+        trend_colors = {"accent": ACCENT, "danger": DANGER,
+                         "muted": MUTED, "warn": WARN}
+        inner = tk.Frame(card, bg=CARD_BG)
+        inner.pack(fill="x", padx=18, pady=(0, 8))
+        if rec:
+            tk.Label(inner,
+                     text=f"종합 의견: {rec['label']}",
+                     bg=CARD_BG, fg=trend_colors.get(rec["color"], MUTED),
+                     font=("Malgun Gothic", 13, "bold")).pack(anchor="w")
+            sub = []
+            if rec.get("mean"):
+                sub.append(f"평균 점수 {rec['mean']:.2f}/5")
+            if rec.get("count"):
+                sub.append(f"애널리스트 {rec['count']}명")
+            if sub:
+                tk.Label(inner, text=" · ".join(sub),
+                         bg=CARD_BG, fg=MUTED,
+                         font=("Malgun Gothic", 9)).pack(
+                    anchor="w", pady=(2, 0))
+
+        # 목표주가 3박스
+        if tgt:
+            grid = tk.Frame(card, bg=CARD_BG)
+            grid.pack(fill="x", padx=14, pady=(4, 14))
+
+            tlow = snap.get("target_low_price")
+            thigh = snap.get("target_high_price")
+
+            def make_target_box(parent, label, price, color, bg_color):
+                box = tk.Frame(parent, bg=bg_color, highlightthickness=1,
+                               highlightbackground=color)
+                tk.Label(box, text=label, bg=bg_color, fg=color,
+                         font=("Malgun Gothic", 11, "bold")).pack(
+                    anchor="w", padx=12, pady=(10, 4))
+                tk.Label(box, text=fmt(price), bg=bg_color, fg=FG,
+                         font=("Malgun Gothic", 14, "bold")).pack(
+                    anchor="w", padx=12)
+                if current_price:
+                    pct = (price / current_price - 1) * 100
+                    tk.Label(box,
+                             text=f"현재가 대비 {pct:+.1f}%",
+                             bg=bg_color, fg=MUTED,
+                             font=("Malgun Gothic", 9)).pack(
+                        anchor="w", padx=12, pady=(2, 10))
+                return box
+
+            if tlow:
+                make_target_box(grid, "🔻 최저 목표가", tlow,
+                                WARN, "#fff8e1").grid(
+                    row=0, column=0, padx=4, pady=4, sticky="nsew")
+            make_target_box(grid, "🎯 평균 목표가", tgt,
+                            PRIMARY, "#e3f2fd").grid(
+                row=0, column=1, padx=4, pady=4, sticky="nsew")
+            if thigh:
+                make_target_box(grid, "🔺 최고 목표가", thigh,
+                                ACCENT, "#e8f5e9").grid(
+                    row=0, column=2, padx=4, pady=4, sticky="nsew")
+            for c in range(3):
+                grid.columnconfigure(c, weight=1)
+
+    # ---- 뉴스 sentiment 카드 ----
+    def _render_news_sentiment(self, s):
+        card = tk.Frame(self.an_container, bg=CARD_BG, bd=0,
+                        highlightthickness=1, highlightbackground=SOFT)
+        card.pack(fill="x", padx=4, pady=6)
+        tk.Label(card, text="📰 최근 뉴스 + Sentiment 분석",
+                 bg=CARD_BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 13, "bold")).pack(
+            anchor="w", padx=18, pady=(14, 6))
+
+        # 종합 sentiment 헤더
+        trend_colors = {"accent": ACCENT, "danger": DANGER, "muted": MUTED}
+        oc = trend_colors.get(s.get("overall_color"), MUTED)
+        head = tk.Frame(card, bg=CARD_BG)
+        head.pack(fill="x", padx=18, pady=(0, 4))
+        tk.Label(head, text=s.get("overall", ""), bg=CARD_BG, fg=oc,
+                 font=("Malgun Gothic", 12, "bold")).pack(side="left")
+        tk.Label(head,
+                 text=f"   🟢 {s['positive']}건 · ⚪ {s['neutral']}건 · "
+                      f"🔴 {s['negative']}건 (총 {s['count']}건, "
+                      f"평균 {s['avg_score']:+.2f})",
+                 bg=CARD_BG, fg=MUTED,
+                 font=("Malgun Gothic", 9)).pack(side="left")
+
+        # 뉴스 리스트 (최대 10개)
+        for item in s["news"][:10]:
+            row = tk.Frame(card, bg=CARD_BG)
+            row.pack(fill="x", padx=18, pady=3)
+
+            # sentiment badge
+            score = item.get("score", 0)
+            if score > 0:
+                badge_bg = "#e8f5e9"
+                badge_fg = ACCENT
+            elif score < 0:
+                badge_bg = "#ffebee"
+                badge_fg = DANGER
+            else:
+                badge_bg = SOFT
+                badge_fg = MUTED
+            badge = tk.Label(row, text=item.get("sentiment", ""),
+                              bg=badge_bg, fg=badge_fg,
+                              font=("Malgun Gothic", 9, "bold"),
+                              padx=6, pady=2)
+            badge.pack(side="left", padx=(0, 8))
+
+            # 제목 + 메타
+            content = tk.Frame(row, bg=CARD_BG)
+            content.pack(side="left", fill="x", expand=True)
+
+            link = item.get("link")
+            title_lbl = tk.Label(content, text=item.get("title", ""),
+                                  bg=CARD_BG, fg=FG,
+                                  font=("Malgun Gothic", 10, "bold"),
+                                  wraplength=820, justify="left",
+                                  cursor="hand2" if link else "")
+            title_lbl.pack(anchor="w")
+            if link:
+                title_lbl.bind("<Button-1>",
+                                lambda _e, u=link: webbrowser.open(u))
+
+            meta_parts = []
+            if item.get("publisher"):
+                meta_parts.append(item["publisher"])
+            if item.get("time"):
+                meta_parts.append(item["time"][:16])
+            if meta_parts:
+                tk.Label(content, text=" · ".join(meta_parts),
+                         bg=CARD_BG, fg=MUTED,
+                         font=("Malgun Gothic", 8)).pack(anchor="w")
+
+        tk.Label(card, text=" ", bg=CARD_BG).pack(pady=2)
 
     def _draw_price_bar(self, canvas, r):
         """수평 가격축에 지지선/저항선/현재가를 표시"""
@@ -2964,6 +3260,295 @@ class AssetManagerApp(tk.Tk):
             return
 
         # 날짜별로 그룹
+        groups = {}
+        for it in items:
+            day = (it.get("time") or "")[:10] or "기타"
+            groups.setdefault(day, []).append(it)
+
+        for day in sorted(groups.keys(), reverse=True):
+            day_label = tk.Label(self.news_container, text=f"📅 {day}",
+                                  bg=BG, fg=PRIMARY,
+                                  font=("Malgun Gothic", 12, "bold"))
+            day_label.pack(anchor="w", padx=6, pady=(10, 4))
+            for it in groups[day]:
+                self._make_news_card(it)
+
+        if hasattr(self, "_news_canvas"):
+            self._mark_scrollable(self.news_container, self._news_canvas)
+
+    def _make_news_card(self, item):
+        card = tk.Frame(self.news_container, bg=CARD_BG, bd=0,
+                        highlightthickness=1, highlightbackground=SOFT)
+        card.pack(fill="x", padx=20, pady=3)
+        bar = tk.Frame(card, bg=PRIMARY, width=4)
+        bar.pack(side="left", fill="y")
+        inner = tk.Frame(card, bg=CARD_BG)
+        inner.pack(side="left", fill="both", expand=True, padx=12, pady=8)
+
+        title = tk.Label(inner, text=item.get("title", ""), bg=CARD_BG, fg=FG,
+                         font=("Malgun Gothic", 11, "bold"),
+                         wraplength=800, justify="left", cursor="hand2")
+        title.pack(anchor="w")
+        link = item.get("link")
+        if link:
+            title.bind("<Button-1>", lambda _, u=link: webbrowser.open(u))
+
+        meta = tk.Frame(inner, bg=CARD_BG)
+        meta.pack(fill="x", pady=(4, 0))
+        tk.Label(meta, text=f"📈 {item.get('stock_name', item.get('ticker', ''))}",
+                 bg=CARD_BG, fg=ACCENT,
+                 font=("Malgun Gothic", 9, "bold")).pack(side="left")
+        tk.Label(meta, text=f"  ·  {item.get('publisher', '')}", bg=CARD_BG, fg=MUTED,
+                 font=("Malgun Gothic", 9)).pack(side="left")
+        if item.get("time"):
+            tk.Label(meta, text=f"  ·  {item['time']}", bg=CARD_BG, fg=MUTED,
+                     font=("Malgun Gothic", 9)).pack(side="left")
+        if link:
+            tk.Label(meta, text="🔗 열기", bg=CARD_BG, fg=PRIMARY,
+                     font=("Malgun Gothic", 9, "underline"),
+                     cursor="hand2").pack(side="right")
+
+    # ==================== 공통 ====================
+    def refresh_all(self):
+        self.refresh_ledger()
+        self.refresh_deposit()
+        self.refresh_stock()
+        self.refresh_trade()
+        self.refresh_asset()
+        self.refresh_insurance()
+        self.refresh_habit()
+        self.refresh_goal()
+        self.refresh_todo()
+        self.refresh_dashboard()
+
+
+if __name__ == "__main__":
+    app = AssetManagerApp()
+    app.mainloop()
+            self._mark_scrollable(self.goal_container, self._goal_canvas)
+
+    def _make_goal_card(self, goal, row, col):
+        card = tk.Frame(self.goal_container, bg=CARD_BG, bd=0,
+                        highlightthickness=1, highlightbackground=SOFT)
+        card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+
+        bar = tk.Frame(card, bg=goal["color"], height=5)
+        bar.pack(fill="x")
+        inner = tk.Frame(card, bg=CARD_BG)
+        inner.pack(fill="both", expand=True, padx=14, pady=12)
+
+        top = tk.Frame(inner, bg=CARD_BG)
+        top.pack(fill="x")
+        tk.Label(top, text=goal["title"], bg=CARD_BG, fg=FG,
+                 font=("Malgun Gothic", 12, "bold"),
+                 wraplength=300, justify="left").pack(side="left", anchor="w")
+        if goal["status"] == "completed":
+            tk.Label(top, text="✅ 완료", bg=CARD_BG, fg=ACCENT,
+                     font=("Malgun Gothic", 10, "bold")).pack(side="right")
+
+        meta = tk.Frame(inner, bg=CARD_BG)
+        meta.pack(fill="x", pady=(6, 4))
+        tk.Label(meta, text=f"📂 {goal['category']}", bg=CARD_BG, fg=goal["color"],
+                 font=("Malgun Gothic", 9, "bold")).pack(side="left")
+        if goal["target_date"]:
+            tk.Label(meta, text=f"📅 {goal['target_date']}", bg=CARD_BG,
+                     fg=MUTED, font=("Malgun Gothic", 9)).pack(side="left", padx=10)
+
+        if goal["description"]:
+            tk.Label(inner, text=goal["description"], bg=CARD_BG, fg=MUTED,
+                     font=("Malgun Gothic", 9), wraplength=320,
+                     justify="left").pack(anchor="w", pady=(2, 6))
+
+        # 진행률
+        pr = tk.Frame(inner, bg=CARD_BG)
+        pr.pack(fill="x", pady=(4, 4))
+        tk.Label(pr, text=f"진행률: {goal['progress']}%", bg=CARD_BG, fg=FG,
+                 font=("Malgun Gothic", 10, "bold")).pack(side="left")
+        bar_bg = tk.Frame(inner, bg=SOFT, height=10)
+        bar_bg.pack(fill="x", pady=(2, 8))
+        fill_w = max(1, int(goal["progress"]))
+        fill = tk.Frame(bar_bg, bg=goal["color"], height=10)
+        fill.place(relwidth=fill_w / 100, relheight=1)
+
+        # 진행률 조절 + 삭제
+        btns = tk.Frame(inner, bg=CARD_BG)
+        btns.pack(fill="x")
+        for delta, label in [(-10, "-10"), (-5, "-5"), (+5, "+5"), (+10, "+10"), (100, "완료")]:
+            tk.Button(btns, text=label, bg=SOFT, fg=FG, relief="flat",
+                      font=("Malgun Gothic", 9), padx=8,
+                      command=lambda d=delta, gid=goal["id"], cur=goal["progress"]:
+                      self.adjust_goal(gid, cur, d)).pack(side="left", padx=2)
+        tk.Button(btns, text="삭제", bg=CARD_BG, fg=DANGER, relief="flat",
+                  font=("Malgun Gothic", 9),
+                  command=lambda gid=goal["id"]: self.delete_goal(gid)).pack(side="right")
+
+    def adjust_goal(self, gid, current, delta):
+        if delta == 100:
+            new = 100
+        else:
+            new = current + delta
+        self.db.update_goal_progress(gid, new)
+        self.refresh_goal()
+        self.refresh_dashboard()
+
+    def delete_goal(self, gid):
+        if messagebox.askyesno("삭제 확인", "이 목표를 삭제할까요?"):
+            self.db.delete_goal(gid)
+            self.refresh_goal()
+            self.refresh_dashboard()
+
+    # ---- 오늘 할 일 ----
+    def _build_todo(self):
+        frame = self.sub_todo
+        form = tk.LabelFrame(frame, text="새 할 일 추가", bg=BG, fg=FG,
+                              font=("Malgun Gothic", 10, "bold"),
+                              padx=10, pady=8, bd=1, relief="solid")
+        form.pack(fill="x", padx=14, pady=8)
+
+        tk.Label(form, text="날짜", bg=BG).grid(row=0, column=0, padx=4)
+        self.td_date = tk.Entry(form, width=12)
+        self.td_date.insert(0, date.today().strftime("%Y-%m-%d"))
+        self.td_date.grid(row=0, column=1, padx=4)
+        tk.Label(form, text="제목", bg=BG).grid(row=0, column=2, padx=4)
+        self.td_title = tk.Entry(form, width=30)
+        self.td_title.grid(row=0, column=3, padx=4)
+        tk.Label(form, text="우선순위", bg=BG).grid(row=0, column=4, padx=4)
+        self.td_pri = ttk.Combobox(form, values=["high", "normal", "low"],
+                                    width=8, state="readonly")
+        self.td_pri.set("normal")
+        self.td_pri.grid(row=0, column=5, padx=4)
+        tk.Label(form, text="설명", bg=BG).grid(row=1, column=0, padx=4, pady=(6, 0))
+        self.td_desc = tk.Entry(form, width=60)
+        self.td_desc.grid(row=1, column=1, columnspan=4, padx=4, pady=(6, 0), sticky="we")
+        ttk.Button(form, text="추가", command=self.add_todo).grid(
+            row=1, column=5, padx=4, pady=(6, 0), sticky="we")
+
+        list_frame = tk.Frame(frame, bg=BG)
+        list_frame.pack(fill="both", expand=True, padx=14, pady=8)
+        cols = ("id", "done", "date", "priority", "title", "description")
+        headers = ("ID", "완료", "날짜", "우선순위", "제목", "설명")
+        widths = (40, 60, 100, 90, 220, 400)
+        self.td_tree = ttk.Treeview(list_frame, columns=cols, show="headings")
+        for c, h, w in zip(cols, headers, widths):
+            self.td_tree.heading(c, text=h)
+            self.td_tree.column(c, width=w, anchor="w")
+        self.td_tree.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(list_frame, orient="vertical",
+                            command=self.td_tree.yview)
+        sb.pack(side="right", fill="y")
+        self.td_tree.configure(yscrollcommand=sb.set)
+
+        tb = tk.Frame(frame, bg=BG)
+        tb.pack(fill="x", padx=14, pady=(0, 8))
+        ttk.Button(tb, text="완료 체크 토글",
+                   command=self.toggle_todo).pack(side="left", padx=4)
+        ttk.Button(tb, text="선택 삭제",
+                   command=self.delete_todo).pack(side="right")
+
+    def add_todo(self):
+        title = self.td_title.get().strip()
+        if not title:
+            return
+        self.db.add_schedule(self.td_date.get(), title,
+                              self.td_desc.get(), self.td_pri.get())
+        self.td_title.delete(0, "end")
+        self.td_desc.delete(0, "end")
+        self.refresh_todo()
+        self.refresh_dashboard()
+
+    def toggle_todo(self):
+        sel = self.td_tree.selection()
+        if not sel:
+            return
+        sid = self.td_tree.item(sel[0])["values"][0]
+        current = self.td_tree.item(sel[0])["values"][1] == "✅"
+        self.db.toggle_schedule(sid, not current)
+        self.refresh_todo()
+        self.refresh_dashboard()
+
+    def delete_todo(self):
+        sel = self.td_tree.selection()
+        if not sel:
+            return
+        sid = self.td_tree.item(sel[0])["values"][0]
+        self.db.delete_schedule(sid)
+        self.refresh_todo()
+        self.refresh_dashboard()
+
+    def refresh_todo(self):
+        for i in self.td_tree.get_children():
+            self.td_tree.delete(i)
+        for s in self.db.get_schedules():
+            self.td_tree.insert("", "end", values=(
+                s["id"], "✅" if s["done"] else "⬜",
+                s["date"], s["priority"],
+                s["title"], s["description"] or ""
+            ))
+
+    # ==================== 뉴스 ====================
+    def _build_news(self):
+        frame = self.tab_news
+        top = tk.Frame(frame, bg=BG)
+        top.pack(fill="x", padx=20, pady=(18, 4))
+        tk.Label(top, text="📰 주식 뉴스 타임라인", bg=BG, fg=PRIMARY,
+                 font=("Malgun Gothic", 16, "bold")).pack(side="left")
+        ttk.Button(top, text="🔄 보유종목 뉴스 업데이트",
+                   command=self.update_news).pack(side="right")
+        self.news_status = tk.Label(frame, text="뉴스를 업데이트하면 보유 종목별 최신 기사가 표시됩니다.",
+                                     bg=BG, fg=MUTED,
+                                     font=("Malgun Gothic", 9))
+        self.news_status.pack(anchor="w", padx=20, pady=(0, 6))
+
+        wrap = tk.Frame(frame, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=20, pady=4)
+        canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.news_container = tk.Frame(canvas, bg=BG)
+        canvas.create_window((0, 0), window=self.news_container, anchor="nw")
+        self.news_container.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        # 휠 스크롤
+        self._news_canvas = canvas
+        canvas._scroll_canvas = canvas
+        wrap._scroll_canvas = canvas
+        self.news_container._scroll_canvas = canvas
+
+    def update_news(self):
+        self.news_status.config(text="뉴스 가져오는 중...")
+        self.update_idletasks()
+
+        def worker():
+            stocks = self.db.get_stocks()
+            all_items = []
+            for s in stocks:
+                items = fetch_stock_news(s["ticker"], limit=5)
+                for it in items:
+                    it["stock_name"] = s["name"] or s["ticker"]
+                all_items.extend(items)
+            all_items.sort(key=lambda x: x.get("time") or "", reverse=True)
+
+            def done():
+                self._render_news(all_items)
+                self.news_status.config(
+                    text=f"총 {len(all_items)}개 기사 ({datetime.now().strftime('%H:%M')})")
+            self.after(0, done)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _render_news(self, items):
+        for w in self.news_container.winfo_children():
+            w.destroy()
+        if not items:
+            tk.Label(self.news_container,
+                     text="가져온 뉴스가 없습니다. 보유 종목을 먼저 등록하거나, "
+                          "yfinance가 해당 티커의 뉴스를 제공하지 않을 수 있어요.",
+                     bg=BG, fg=MUTED, wraplength=800,
+                     font=("Malgun Gothic", 11)).pack(pady=30)
+            return
+
         groups = {}
         for it in items:
             day = (it.get("time") or "")[:10] or "기타"
